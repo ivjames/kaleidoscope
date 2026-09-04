@@ -1,0 +1,11 @@
+node_modules/
+.DS_Store
+*.log
+
+# Keep the scaffold's conventions file tracked. Written as `.claude/*` plus a
+# negation rather than `.claude/`: git does not descend into a directory
+# excluded by the bare form, so a negation nested under it is never consulted
+# and the conventions land on disk, get skipped by `git add -A` without a word,
+# and reach nobody.
+.claude/*
+!.claude/rules/

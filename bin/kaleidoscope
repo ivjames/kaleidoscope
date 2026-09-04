@@ -1,0 +1,223 @@
+#!/usr/bin/env bash
+# kaleidoscope — operate CLI for kaleidoscope.lab980.com (Kaleidoscope).
+#
+# The site is static files served straight by nginx: no app process, no local
+# port, no pm2, no build step. This script is the whole lifecycle:
+#
+#   kaleidoscope setup      one-time on the droplet: DNS A record (doctl), static
+#                     nginx vhost from deploy/nginx.conf.template, TLS via
+#                     certbot, /usr/local/bin symlink. Idempotent.
+#   kaleidoscope deploy     sync this checkout to origin/main (fetch + hard reset)
+#   kaleidoscope status     HEAD, live-site probe, cert days remaining
+#
+# Env overrides:
+#   KALEIDOSCOPE_FQDN     default kaleidoscope.lab980.com
+#   KALEIDOSCOPE_BRANCH   default main
+#   KALEIDOSCOPE_ZONE     DNS zone, if it isn't derivable from the fqdn
+#   KALEIDOSCOPE_RECORD   DNS record name within that zone ("@" for an apex)
+#
+# The web root is wherever this script's repo checkout lives (normally
+# /var/www/kaleidoscope) — derived from the script's own path, so the
+# /usr/local/bin symlink resolves back here.
+set -euo pipefail
+
+SELF="$(readlink -f "$0")"
+ROOT="$(cd "$(dirname "$SELF")/.." && pwd)"
+FQDN="${KALEIDOSCOPE_FQDN:-kaleidoscope.lab980.com}"
+BRANCH="${KALEIDOSCOPE_BRANCH:-main}"
+# DNS zone, and the record name within it. Baked in by the scaffold, which
+# knows which this is; the CLI cannot reliably tell. Counting labels gets
+# sheep.lab980.com and boxo.show right and example.co.uk wrong — and wrong here
+# means asking doctl for a record in a zone that does not exist, which fails
+# `setup` before nginx or TLS. Overridable for the case where the site moves.
+DOMAIN="${KALEIDOSCOPE_ZONE:-lab980.com}"
+RECORD="${KALEIDOSCOPE_RECORD:-kaleidoscope}"
+
+c_blue=$'\033[1;34m'; c_yellow=$'\033[1;33m'; c_red=$'\033[1;31m'; c_off=$'\033[0m'
+log()  { printf '%s==>%s %s\n' "$c_blue" "$c_off" "$*"; }
+warn() { printf '%swarn:%s %s\n' "$c_yellow" "$c_off" "$*" >&2; }
+die()  { printf '%serror:%s %s\n' "$c_red" "$c_off" "$*" >&2; exit 1; }
+
+usage() {
+  cat <<'USAGE'
+kaleidoscope — operate kaleidoscope.lab980.com (static site, nginx-only).
+
+Usage:
+  kaleidoscope setup [--no-dns] [--no-tls] [--ip IP]   provision DNS + vhost + TLS
+  kaleidoscope deploy                                  sync checkout to origin/main
+  kaleidoscope status                                  HEAD + live probe + cert
+
+Env: KALEIDOSCOPE_FQDN (default kaleidoscope.lab980.com), KALEIDOSCOPE_BRANCH (default main),
+     KALEIDOSCOPE_ZONE / KALEIDOSCOPE_RECORD to override the DNS split.
+USAGE
+}
+
+cmd_setup() {
+  local DO_DNS=1 DO_TLS=1 IP=""
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --no-dns) DO_DNS=0; shift;;
+      --no-tls) DO_TLS=0; shift;;
+      --ip)     IP="$2"; shift 2;;
+      *) die "unknown setup option: $1";;
+    esac
+  done
+  [ "$(id -u)" -eq 0 ] || die "setup must run as root."
+  [ -f "$ROOT/index.html" ] || die "no index.html in $ROOT — is this the kaleidoscope checkout?"
+
+  log "Setting up $FQDN  (web root: $ROOT)"
+
+  if { [ "$DO_DNS" -eq 1 ] || [ "$DO_TLS" -eq 1 ]; } && [ -z "$IP" ]; then
+    IP="$(curl -s --max-time 5 http://169.254.169.254/metadata/v1/interfaces/public/0/ipv4/address || true)"
+  fi
+
+  # ---- DNS A record via doctl (same shape as provision-site) ----
+  if [ "$DO_DNS" -eq 1 ]; then
+    command -v doctl >/dev/null || die "doctl not found; install it or pass --no-dns and create the record yourself."
+    [ -n "$IP" ] || die "couldn't determine droplet IP for DNS; pass --ip."
+    local existing
+    existing="$(doctl compute domain records list "$DOMAIN" --no-header --format Type,Name,Data 2>/dev/null \
+                | awk -v n="$RECORD" '$1=="A" && $2==n {print $3}' | head -1)"
+    if [ -n "$existing" ]; then
+      log "DNS: A $FQDN -> $existing already exists (leaving as-is)"
+    else
+      log "DNS: creating A $FQDN -> $IP (record $RECORD in zone $DOMAIN, ttl 300)"
+      doctl compute domain records create "$DOMAIN" \
+        --record-type A --record-name "$RECORD" --record-data "$IP" --record-ttl 300 >/dev/null
+    fi
+  fi
+
+  # ---- shared security headers snippet (seed if this is a fresh box) ----
+  local snippet="/etc/nginx/snippets/lab980-security-headers.conf"
+  if [ ! -f "$snippet" ]; then
+    mkdir -p /etc/nginx/snippets
+    cat > "$snippet" <<'EOF'
+# lab980 shared security headers — managed by fix-security-headers.
+# Included at server{} level by every :443 vhost. Do not add a CSP here:
+# that one is per-site (snippets/lab980-csp-self.conf, opt-in).
+add_header Strict-Transport-Security "max-age=31536000" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header X-Frame-Options "SAMEORIGIN" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+EOF
+    log "nginx: seeded $snippet"
+  fi
+
+  # ---- static vhost from template ----
+  # If the vhost already exists, leave it alone: certbot rewrites it when TLS
+  # is added, and regenerating from the template would clobber that.
+  local conf="/etc/nginx/sites-available/$FQDN"
+  if [ -f "$conf" ]; then
+    log "nginx: $conf already exists (leaving as-is)"
+  else
+    log "nginx: writing $conf (static root: $ROOT)"
+    sed -e "s|@@FQDN@@|$FQDN|g" -e "s|@@ROOT@@|$ROOT|g" \
+      "$ROOT/deploy/nginx.conf.template" > "$conf"
+  fi
+  ln -sf "$conf" "/etc/nginx/sites-enabled/$FQDN"
+  nginx -t && systemctl reload nginx
+  log "nginx: enabled and reloaded"
+
+  # ---- TLS via certbot ----
+  if [ "$DO_TLS" -eq 1 ]; then
+    if ! command -v certbot >/dev/null; then
+      warn "certbot not found; skipping TLS. Later: certbot --nginx -d $FQDN --redirect -n"
+    else
+      if [ -n "$IP" ]; then
+        log "waiting for $FQDN to resolve to $IP (up to ~5 min) ..."
+        local ok=0 got=""
+        for _ in $(seq 1 30); do
+          if command -v dig >/dev/null; then got="$(dig +short "$FQDN" | tail -1)"
+          else got="$(getent hosts "$FQDN" | awk '{print $1}' | head -1)"; fi
+          [ "$got" = "$IP" ] && { ok=1; break; }
+          sleep 10
+        done
+        if [ "$ok" -ne 1 ]; then
+          warn "$FQDN not resolving to $IP yet (DNS still propagating)."
+          warn "Re-run TLS later:  certbot --nginx -d $FQDN --redirect -n"
+          DO_TLS=0
+        fi
+      fi
+      if [ "$DO_TLS" -eq 1 ]; then
+        log "TLS: issuing cert for $FQDN"
+        certbot --nginx -d "$FQDN" --redirect -n
+      fi
+    fi
+  fi
+
+  # ---- operate-CLI symlink (per lab980 convention) ----
+  if [ "$SELF" != "/usr/local/bin/kaleidoscope" ]; then
+    ln -sf "$ROOT/bin/kaleidoscope" /usr/local/bin/kaleidoscope
+    log "symlinked /usr/local/bin/kaleidoscope -> $ROOT/bin/kaleidoscope"
+  fi
+
+  log "Done. Site: https://$FQDN/"
+}
+
+# Wrapped so the whole function is parsed before `git reset` can rewrite this
+# script mid-run (same trick as lab980's update.sh).
+cmd_deploy() {
+  cd "$ROOT"
+  git rev-parse --is-inside-work-tree >/dev/null 2>&1 || die "$ROOT is not a git clone."
+  log "Syncing $ROOT to origin/$BRANCH"
+  local before after
+  before="$(git rev-parse --short HEAD)"
+  git fetch --quiet origin "$BRANCH"
+  git reset --hard --quiet "origin/$BRANCH"
+  after="$(git rev-parse --short HEAD)"
+  if [ "$before" = "$after" ]; then
+    log "already current ($after)"
+  else
+    log "$before -> $after"
+    git --no-pager log --oneline "$before..$after"
+  fi
+  # Stamp the deployed commit into the page if it carries a BUILD constant, so
+  # a visitor (and `status` below) can see WHICH commit is live — a static site
+  # has no other version signal, and a stale cache is otherwise invisible. The
+  # stamp dirties the checkout on purpose; the next deploy's reset wipes and
+  # re-stamps it. Anchor the pattern to the declaration line: an unanchored one
+  # also hits any update-checker regex further down the file and corrupts it.
+  if grep -q "^  const BUILD = '" index.html 2>/dev/null; then
+    sed -i "s/^  const BUILD = '[^']*';/  const BUILD = '$after';/" index.html
+    log "stamped build $after into index.html"
+  fi
+  log "Done. (Static files serve straight from disk — no reload needed.)"
+}
+
+cmd_status() {
+  cd "$ROOT"
+  printf 'checkout:  %s  %s\n' "$(git rev-parse --short HEAD)" "$(git log -1 --format=%s)"
+  local page code build
+  page="$(curl -s --max-time 10 -w '\n%{http_code}' "https://$FQDN/" || true)"
+  code="$(printf '%s' "$page" | tail -1)"
+  # `|| true` is load-bearing under `set -euo pipefail`: a page that carries no
+  # BUILD constant is a supported case (the deploy stamp is optional), grep
+  # exits 1 on no match, and pipefail would otherwise kill cmd_status here —
+  # before it printed the HTTP code or the cert, which is most of the point.
+  # head -1 because a page that polls its own build stamp carries a matching
+  # regex literal, so grep returns two lines and `build` ends up with an
+  # embedded newline — the phantom second build this repo's CLAUDE.md warns
+  # about. `|| true` because a page with no stamp at all is supported, and
+  # pipefail would otherwise kill status before it printed anything.
+  build="$(printf '%s' "$page" | grep -o "const BUILD = '[^']*'" | cut -d"'" -f2 | head -1 || true)"
+  printf 'live:      https://%s/  ->  HTTP %s  (build %s)\n' \
+    "$FQDN" "${code:-unreachable}" "${build:-n/a}"
+  local pem="/etc/letsencrypt/live/$FQDN/cert.pem"
+  if [ -r "$pem" ]; then
+    local end days
+    end="$(openssl x509 -enddate -noout -in "$pem" | cut -d= -f2)"
+    days=$(( ($(date -d "$end" +%s) - $(date +%s)) / 86400 ))
+    printf 'cert:      %s days remaining (expires %s)\n' "$days" "$end"
+  else
+    printf 'cert:      (run as root to read expiry)\n'
+  fi
+}
+
+case "${1:-}" in
+  setup)     shift; cmd_setup "$@";;
+  deploy)    shift; cmd_deploy "$@";;
+  status)    shift; cmd_status "$@";;
+  -h|--help|help|"") usage;;
+  *) die "unknown command: $1 (see --help)";;
+esac

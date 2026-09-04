@@ -1,0 +1,40 @@
+# nginx vhost for Kaleidoscope — plain static site, no app process.
+# Installed by `kaleidoscope setup` as the vhost for this site. The @@FQDN@@ and
+# @@ROOT@@ placeholders are filled in by sed AT SETUP TIME on the droplet —
+# a deliberately different syntax from the scaffold's own double-underscore
+# placeholders, so the two substitution passes can't eat each other's markers.
+#
+# certbot --nginx adds the :443 block + redirect afterwards, copying this
+# server block — so everything here rides along into the TLS vhost.
+#
+# Note on add_header inheritance: a location{} that sets its own add_header
+# stops inheriting the server-level ones, so the shared security snippet is
+# re-included in every location that adds Cache-Control.
+
+server {
+    listen 80;
+    listen [::]:80;
+    server_name @@FQDN@@;
+
+    root @@ROOT@@;
+    index index.html;
+
+    include snippets/lab980-security-headers.conf;
+
+    # Always revalidate the entry page, so a deploy (git reset to origin/main)
+    # is live on the next visit rather than after a cache expiry nobody can
+    # see. "/" internally redirects here via the index directive and picks up
+    # these headers. Hashed/versioned assets can be cached hard alongside this.
+    location = /index.html {
+        include snippets/lab980-security-headers.conf;
+        add_header Cache-Control "no-cache" always;
+    }
+
+    location / {
+        try_files $uri $uri/ =404;
+    }
+
+    # The web root is the git checkout — keep repo plumbing and docs private.
+    location ~ /\. { deny all; }
+    location ~* \.md$ { deny all; }
+}
