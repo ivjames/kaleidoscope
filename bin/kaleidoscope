@@ -107,16 +107,39 @@ EOF
   # ---- static vhost from template ----
   # If the vhost already exists, leave it alone: certbot rewrites it when TLS
   # is added, and regenerating from the template would clobber that.
-  local conf="/etc/nginx/sites-available/$FQDN"
+  local conf="/etc/nginx/sites-available/$FQDN" link="/etc/nginx/sites-enabled/$FQDN"
+  local wrote_conf=0 prev_link
+  # sites-enabled entries are symlinks here. A regular file at that path is
+  # someone's hand-placed config; `ln -sf` would replace it and the rollback
+  # below would then delete it, so refuse before anything is written.
+  if [ -e "$link" ] && [ ! -L "$link" ]; then
+    die "$link exists and is not a symlink — refusing to replace it. Move it aside, then re-run setup."
+  fi
   if [ -f "$conf" ]; then
     log "nginx: $conf already exists (leaving as-is)"
   else
     log "nginx: writing $conf (static root: $ROOT)"
     sed -e "s|@@FQDN@@|$FQDN|g" -e "s|@@ROOT@@|$ROOT|g" \
       "$ROOT/deploy/nginx.conf.template" > "$conf"
+    wrote_conf=1
   fi
-  ln -sf "$conf" "/etc/nginx/sites-enabled/$FQDN"
-  nginx -t && systemctl reload nginx
+  prev_link="$(readlink "$link" 2>/dev/null || true)"   # '' = no symlink before this run
+  ln -sfn "$conf" "$link"
+  # An explicit branch, not `nginx -t && systemctl reload nginx`: under set -e
+  # a failing left side of && is exempt from errexit, so that form left a
+  # rejected vhost enabled on disk, logged "enabled and reloaded", and carried
+  # on to certbot — and the next reload or reboot took every site on the box
+  # down with it. Undo exactly what this run put there, then stop.
+  if ! nginx -t; then
+    if [ "$wrote_conf" -eq 1 ]; then rm -f "$conf"; fi
+    if [ -z "$prev_link" ]; then rm -f "$link"; else ln -sfn "$prev_link" "$link"; fi
+    if [ "$wrote_conf" -eq 1 ]; then
+      die "nginx -t rejected the new vhost; removed $conf and its sites-enabled link. Fix deploy/nginx.conf.template and re-run setup."
+    fi
+    die "nginx -t fails with the existing $conf (this run only re-linked it, and has undone that). Fix the config, then re-run setup."
+  fi
+  systemctl reload nginx \
+    || die "nginx -t passed but the reload failed — $conf is on disk and enabled; nginx is still serving its previous config. Check: systemctl status nginx"
   log "nginx: enabled and reloaded"
 
   # ---- TLS via certbot ----
