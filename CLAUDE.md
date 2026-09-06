@@ -82,6 +82,16 @@ raising the window size costs one cheap pass instead of two.
   greedy version and it does not reliably converge — it ping-pongs between two
   mirrors and leaves far-out points unfolded, which shows on screen as flat
   unresolved patches in the corners at a wide field of view.
+- **Spin is cosmetic, which is why it needed a leash.** A shard's angle feeds
+  nothing back into the sim — the pieces collide as discs — so nothing was
+  pushing back when contacts pumped it up. They did: a settled cell used to
+  drift from 0.75 rad/s at spawn to a mean near 2 with peaks around 8, and a
+  shake spiked past 17. The constants at the top of `js/cell.js` hold it near
+  0.35 now, every input is weighted by `spinInertia` (a big statement piece
+  barely turns, which is most of what "too fast" looks like), and the Tumble
+  slider scales the lot — 0 stops rotation dead without freezing the pile.
+  Check a change to any of it against spawn-vs-settled: if settled is much
+  higher, contacts are pumping again.
 - **Every shard shape comes out of one 27-vertex fan.** `SHARD_VS` decides per
   instance where each rim vertex lands: an n-gon, a star (twice the corners,
   every other one pulled in), a sliver (a quad squashed on one axis), or a

@@ -53,6 +53,7 @@ const S = {
   size: 1.7,
   gravity: 0.9,
   agitation: 0.06,
+  tumble: 1,
   backdrop: 'off',
   mediaMix: 0.9,
   mediaGain: 1.0,
@@ -75,6 +76,7 @@ export function start(build) {
   cell.setDensity(S.alpha);
   cell.setSize(S.size);
   cell.setShape(S.shape);
+  cell.setTumble(S.tumble);
 
   let saveTimer = 0;      // declared up here: bind() writes settings during setup
   let atlasTimer = 0;
@@ -150,6 +152,7 @@ export function start(build) {
   bind('c-size', 'size', n2, (v) => cell.setSize(v));
   bind('c-grav', 'gravity', n2);
   bind('c-agit', 'agitation', pct);
+  bind('c-tumble', 'tumble', (v) => n2(v) + '×', (v) => cell.setTumble(v));
   bind('c-mediamix', 'mediaMix', pct);
   bind('c-mediagain', 'mediaGain', (v) => n2(v) + '×');
   bind('c-scale', 'scale', (v) => n2(v) + '×');
