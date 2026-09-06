@@ -144,7 +144,7 @@ function measureInk(ctx, n, cols, cellPx) {
   const mid = (cellPx - 1) / 2;
   for (let i = 0; i < n; i++) {
     const ox = (i % cols) * cellPx, oy = Math.floor(i / cols) * cellPx;
-    let px = 0, py = 0;
+    let px = 0, py = 0, found = false;
     let d;
     try {
       d = ctx.getImageData(ox, oy, cellPx, cellPx).data;
@@ -153,10 +153,17 @@ function measureInk(ctx, n, cols, cellPx) {
     }
     for (let p = 0, q = 3; p < cellPx * cellPx; p++, q += 4) {
       if (d[q] <= INK_ALPHA) continue;
+      found = true;
       const dx = Math.abs((p % cellPx) - mid), dy = Math.abs(((p / cellPx) | 0) - mid);
       if (dx > px) px = dx;
       if (dy > py) py = dy;
     }
+    // No ink found at all is not a very small glyph, it is a readback that told
+    // us nothing — a canvas that came back blank without throwing. Fall back to
+    // the whole cell, as the tainted case above does: too generous a contact
+    // box is the old behaviour, while too small a one would leave every
+    // character colliding as a point while still drawing at full size.
+    if (!found) continue;
     // px is a half-extent in pixels; the cell's own half-extent is cellPx/2, so
     // the fraction of the cell the quad must span is 2*px/cellPx.
     ext[i * 2] = Math.min(1, Math.max(INK_MIN, (2 * px + 1) / cellPx + INK_PAD));
