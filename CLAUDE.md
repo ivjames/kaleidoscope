@@ -56,7 +56,7 @@ controls; the rest are ES modules loaded straight from `js/`.
 | `js/cell.js` | the object cell — the disc of tumbling glass. Counting-sort broadphase, contacts taken against each shard's real outline, a relaxation solver on a fixed 180 Hz timestep, and the fill cap that bounds how much glass the chamber holds. Also the palettes and the shape modes. Pure CPU, no GL. |
 | `js/shaders.js` | the three GLSL ES 3.00 programs, as strings. |
 | `js/renderer.js` | WebGL2: FBO, instancing, blend state, the three textures, the mirror-tube geometry, GPU timing. |
-| `js/glyphs.js` | rasterises a character set into the glyph atlas, with canvas2D. No GL — it hands the renderer a canvas. |
+| `js/glyphs.js` | rasterises a character set into the glyph atlas, with canvas2D, and measures how much of each cell the ink actually covers. No GL — it hands the renderer a canvas. |
 | `js/media.js` | the backdrop sources: camera, screen share, dropped file. Owns the stream and the video element, not the texture. |
 | `js/main.js` | frame loop, controls (including the Shards ceiling, which tracks shard size), input, frame-rate metrics, adaptive scale. |
 
@@ -153,6 +153,21 @@ raising the window size costs one cheap pass instead of two.
   vertices emit repeats, i.e. degenerate triangles the rasteriser drops. Adding
   a shape means a new branch there and a new family number in `packStyle`, not
   a second draw call.
+- **A glyph collides as its ink, not as its atlas cell.** The cell has to carry
+  a margin — bilinear filtering and the mipmaps both reach past a cell's own
+  texels — and a character rarely fills what is left: an emoji covers about 45%
+  of its cell's area, a capital 19%, a `1` 9%, a full stop 1%. Drawn as the
+  whole cell, the quad *is* the contact rectangle, so a cellful of text held
+  itself apart by boxes several times the size of anything visible. `buildAtlas`
+  measures each glyph's ink off the rasterised pixels — `measureText` is not
+  reliable for a colour emoji — symmetrically about the cell centre, and the
+  quad shrinks to that box and takes its atlas uv in with it. The character is
+  drawn at exactly the size it always was; only the empty space around it goes.
+  The same two numbers are the rectangle `_support` collides with, so the two
+  cannot drift apart. That is also why `buildAtlas` centres a glyph on its ink
+  rather than on the text origin: with `textBaseline` middle a descender or a
+  tall cap sits a few percent off centre, which both wastes the box and makes
+  the shard spin about a point that is not the middle of what you can see.
 - **Glyph mode is exclusive on purpose.** The atlas fetch is behind a *uniform*
   branch (`uGlyph`), so it costs nothing in the other modes. Mixing glyphs into
   the confetti mix would make that a per-shard branch on a texture read, which

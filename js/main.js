@@ -339,7 +339,7 @@ export function start(build) {
     if (!chars.length) chars = ['·'];
     const atlas = buildAtlas(chars, 128);
     renderer.setAtlas(atlas.canvas, atlas.cols, atlas.rows);
-    cell.setGlyphCount(atlas.count);
+    cell.setGlyphs(atlas.count, atlas.ext);
     $('m-cell').textContent = cellLabel();
   }
   rebuildAtlas();

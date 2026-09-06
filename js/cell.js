@@ -208,8 +208,14 @@ export class ObjectCell {
     // Resolved once per mode change rather than per frame, because the contact
     // solver reads them at 180 Hz as well as the instance packer.
     this.fam = new Float32Array(m);     // 0 polygon, 1 star, 2 sliver, 3 glyph
-    this.nsides = new Float32Array(m);
-    this.aux = new Float32Array(m);     // star waist / sliver aspect / glyph index
+    // The two shape parameters the shader's aShape.xy carries, and what they
+    // mean depends on the family — polygon and star want a corner count and a
+    // phase, sliver and glyph want the two half-extents of a rectangle. Held
+    // under neutral names because the instance buffer has exactly these two
+    // slots and both families have to fit through them.
+    this.pA = new Float32Array(m);
+    this.pB = new Float32Array(m);
+    this.aux = new Float32Array(m);     // star waist / glyph index
     this.areaK = new Float32Array(m);   // outline area / radius², i.e. how solid it is
     // Trig the contact solver would otherwise redo per contact. cosA/sinA are
     // refreshed once per substep when the angle is integrated; the sector
@@ -244,6 +250,7 @@ export class ObjectCell {
     this.tumble = 1;
     this.shapeMode = 'chips';
     this.glyphCount = 1;
+    this.glyphExt = null;   // per-glyph ink half-extents, from buildAtlas
     this.setCount(360);
   }
 
@@ -313,7 +320,15 @@ export class ObjectCell {
   setDensity(alpha) { this.densityAlpha = alpha; this.styleDirty = true; }
   setTumble(t) { this.tumble = Math.max(0, t); }
   setShape(mode) { this.shapeMode = mode; this._resolveShapes(); }
-  setGlyphCount(n) { this.glyphCount = Math.max(1, n | 0); this._resolveShapes(); }
+  // The atlas hands over how much of each cell its glyph's ink actually covers.
+  // Without it a glyph collides as its whole cell, which for an emoji is about
+  // twice the area of anything visible and for a "1" is ten times — the cell
+  // full of characters held itself apart with oceans of empty space.
+  setGlyphs(n, ext) {
+    this.glyphCount = Math.max(1, n | 0);
+    this.glyphExt = ext || null;
+    this._resolveShapes();
+  }
 
   // Resolve each shard's shape for the current mode. The families are the ones
   // SHARD_VS knows about: 0 polygon, 1 star, 2 sliver, 3 glyph — with aux
@@ -337,7 +352,20 @@ export class ObjectCell {
         if (k > 0.78) { fam = 2; aux = 0.09 + this.auxR[i] * 0.28; }
         else if (k > 0.48) { fam = 1; sides = 5 + Math.floor(this.auxR[i] * 4); aux = 0.34 + this.auxR[i] * 0.26; }
       }
-      this.fam[i] = fam; this.nsides[i] = sides; this.aux[i] = aux;
+      // The rectangle families carry half-extents instead of a corner count and
+      // a phase: 1.0 spans the square inscribed in the shard's disc. A sliver
+      // is that square squashed on its local y; a glyph is its own ink box.
+      let pA = sides, pB = this.phase[i];
+      if (fam > 1.5) {
+        pA = 1; pB = aux;
+        if (fam > 2.5) {
+          const e = this.glyphExt;
+          const o = aux * 2;
+          pA = e && o + 1 < e.length ? e[o] : 1;
+          pB = e && o + 1 < e.length ? e[o + 1] : 1;
+        }
+      }
+      this.fam[i] = fam; this.pA[i] = pA; this.pB[i] = pB; this.aux[i] = aux;
       const beta = TAU / (fam < 0.5 ? sides : (fam < 1.5 ? sides * 2 : 4));
       this.beta[i] = beta; this.invBeta[i] = 1 / beta;
       this.sinB[i] = Math.sin(beta); this.cosB[i] = Math.cos(beta);
@@ -350,7 +378,7 @@ export class ObjectCell {
       // inscribed square, squashed on one axis for a sliver.
       this.areaK[i] = fam < 0.5 ? 0.5 * sides * Math.sin(TAU / sides)
         : (fam < 1.5 ? sides * aux * Math.sin(Math.PI / sides)
-          : (fam < 2.5 ? 2 * aux : 2));
+          : 2 * pA * pB);
     }
     this.styleDirty = true;
   }
@@ -387,8 +415,8 @@ export class ObjectCell {
       // whichever face the ray leaves through. Its normal is a local axis, and
       // tan is pi-periodic, so which of the two faces on that axis it is makes
       // no difference to the tilt.
-      const hx = R * 0.70710678;
-      const hy = fam < 2.5 ? hx * this.aux[i] : hx;
+      const hx = R * 0.70710678 * this.pA[i];
+      const hy = R * 0.70710678 * this.pB[i];
       const ax = lx < 0 ? -lx : lx, ay = ly < 0 ? -ly : ly;
       if (hx * ay <= hy * ax) { this._supTan = ly / lx; return hx / ax; }
       this._supTan = -lx / ly;
@@ -400,7 +428,7 @@ export class ObjectCell {
     // support along a chord between polar points (r1, 0) and (r2, beta) is
     // r1·r2·sin beta / (r1·sin a + r2·sin(beta − a)).
     const beta = this.beta[i];
-    const t = (Math.atan2(ly, lx) - this.phase[i]) * this.invBeta[i];
+    const t = (Math.atan2(ly, lx) - this.pB[i]) * this.invBeta[i];
     const k = Math.floor(t);
     const a = (t - k) * beta;
     let r1 = R, r2 = R;
@@ -685,7 +713,7 @@ export class ObjectCell {
     for (let i = 0, o = 0; i < this.count; i++, o += 8) {
       s[o] = this.cr[i]; s[o + 1] = this.cg[i]; s[o + 2] = this.cb[i];
       s[o + 3] = Math.min(1, this.densityAlpha * this.opacity[i]);
-      s[o + 4] = this.nsides[i]; s[o + 5] = this.phase[i];
+      s[o + 4] = this.pA[i]; s[o + 5] = this.pB[i];
       s[o + 6] = this.fam[i]; s[o + 7] = this.aux[i];
     }
     this.styleDirty = false;
