@@ -22,6 +22,7 @@
       --mono: ui-monospace, 'Cascadia Code', 'SF Mono', Menlo, Consolas, monospace;
     }
     * { margin: 0; padding: 0; box-sizing: border-box; }
+    [hidden] { display: none !important; }
     html, body { height: 100%; overflow: hidden; }
     body {
       background: var(--black);
@@ -111,6 +112,14 @@
       background: #0C0C0C; color: var(--white);
       border: 1px solid var(--border); padding: 7px 8px; cursor: pointer;
     }
+    input[type=text] {
+      width: 100%; font-family: var(--mono); font-size: 13px;
+      background: #0C0C0C; color: var(--white);
+      border: 1px solid var(--border); padding: 7px 8px; cursor: text;
+    }
+    input[type=text]::placeholder { color: var(--faint); }
+    .note { color: var(--faint); font-size: 10px; line-height: 1.6; margin-top: -3px; }
+    .note.is-bad { color: var(--warn); }
     select:focus-visible, button:focus-visible, input:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
     button:hover { border-color: var(--accent); color: var(--accent); }
     .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
@@ -162,6 +171,7 @@
       <dt>buffer</dt><dd id="m-res">—</dd>
       <dt>shards</dt><dd id="m-shards">—</dd>
       <dt>tube</dt><dd id="m-tube">—</dd>
+      <dt>cell</dt><dd id="m-cell">—</dd>
     </dl>
   </div>
 
@@ -204,16 +214,38 @@
           <input type="range" id="c-seam" min="0" max="1" step="0.01" />
         </div>
         <label class="check"><input type="checkbox" id="c-eyepiece" /> Eyepiece aperture</label>
+        <div class="row">
+          <div class="lbl"><span>Vision</span></div>
+          <select id="c-vision" aria-label="Colour vision simulation">
+            <option value="normal">Trichromatic — as designed</option>
+            <option value="deutan">Deuteranopia — no green cone</option>
+            <option value="protan">Protanopia — no red cone</option>
+            <option value="tritan">Tritanopia — no blue cone</option>
+            <option value="mono">Achromatopsia — luminance only</option>
+          </select>
+        </div>
       </fieldset>
 
       <fieldset>
         <legend>Object cell</legend>
         <div class="row">
+          <select id="c-shape" aria-label="Shard shape"></select>
+        </div>
+        <div class="row" id="row-glyphs">
+          <input type="text" id="c-glyphs" spellcheck="false" autocomplete="off" maxlength="256"
+                 aria-label="Characters in the cell" placeholder="type letters, numbers, emoji…" />
+          <div style="height:8px"></div>
+          <select id="c-preset" aria-label="Character preset">
+            <option value="">Load a set…</option>
+          </select>
+        </div>
+        <label class="check" id="row-native"><input type="checkbox" id="c-native" /> Keep each glyph's own colour (emoji)</label>
+        <div class="row">
           <select id="c-palette" aria-label="Palette"></select>
         </div>
         <div class="row">
           <div class="lbl"><span>Shards</span><output id="o-count"></output></div>
-          <input type="range" id="c-count" min="24" max="2400" step="8" />
+          <input type="range" id="c-count" min="0" max="2400" step="8" />
         </div>
         <div class="row">
           <div class="lbl"><span>Glass density</span><output id="o-alpha"></output></div>
@@ -235,6 +267,33 @@
           <button id="b-shake" type="button">Shake</button>
           <button id="b-refill" type="button">Refill</button>
         </div>
+      </fieldset>
+
+      <fieldset>
+        <legend>Backdrop</legend>
+        <div class="row">
+          <select id="c-backdrop" aria-label="Backdrop behind the glass">
+            <option value="off">Frosted backlight</option>
+            <option value="camera">Camera</option>
+            <option value="screen">Screen or tab</option>
+            <option value="file">Image or video…</option>
+          </select>
+        </div>
+        <div class="row">
+          <button id="b-file" type="button">Choose image or video…</button>
+        </div>
+        <p class="note" id="media-note"></p>
+        <div class="row" id="row-mediamix">
+          <div class="lbl"><span>Backdrop mix</span><output id="o-mediamix"></output></div>
+          <input type="range" id="c-mediamix" min="0" max="1" step="0.01" />
+        </div>
+        <div class="row" id="row-mediagain">
+          <div class="lbl"><span>Backdrop gain</span><output id="o-mediagain"></output></div>
+          <input type="range" id="c-mediagain" min="0.2" max="2.5" step="0.01" />
+        </div>
+        <p class="note">Drop a file anywhere on the page. A YouTube embed can't be
+          read by a page — share the tab playing it instead.</p>
+        <input type="file" id="c-file" accept="image/*,video/*" hidden />
       </fieldset>
 
       <fieldset>
@@ -261,7 +320,7 @@
 
   <div id="keys" class="ui">
     <div><kbd>drag</kbd>roll the tube <kbd>wheel</kbd>field of view <kbd>click</kbd>shake</div>
-    <div><kbd>1-4</kbd>tube <kbd>space</kbd>shake <kbd>p</kbd>pause <kbd>h</kbd>chrome <kbd>f</kbd>fullscreen <kbd>r</kbd>reset</div>
+    <div><kbd>1-4</kbd>tube <kbd>s</kbd>shape <kbd>space</kbd>shake <kbd>p</kbd>pause <kbd>h</kbd>chrome <kbd>f</kbd>fullscreen <kbd>r</kbd>reset</div>
     <div><a href="https://lab980.com">lab980.com</a></div>
   </div>
 

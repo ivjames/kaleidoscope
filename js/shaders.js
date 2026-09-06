@@ -22,46 +22,89 @@ void main() {
 // ---------------------------------------------------------------------------
 // A kaleidoscope's object cell is lit from behind through a frosted plate, so
 // the ground truth under the glass is a soft radial falloff, not flat white.
+//
+// uMediaMix swaps that plate for a picture — camera, screen share, a file. The
+// falloff stays as a multiplier even then, because the tube is dark at the rim
+// whatever is behind the glass, and because a picture carried flat to the edge
+// makes the fold look like wallpaper rather than like something lit.
 export const BACKLIGHT_FS = `#version 300 es
 precision highp float;
-uniform vec2 uRes;
-uniform vec3 uWarm;
-uniform vec3 uCool;
+uniform vec2  uRes;
+uniform vec3  uWarm;
+uniform vec3  uCool;
+uniform sampler2D uMedia;
+uniform float uMediaMix;
+uniform vec2  uMediaScale;
+uniform float uMediaGain;
 out vec4 outColor;
 void main() {
   vec2 uv = gl_FragCoord.xy / uRes * 2.0 - 1.0;
   float r = length(uv);
   float lit = smoothstep(1.35, 0.05, r);
-  outColor = vec4(mix(uCool, uWarm, lit), 1.0);
+  vec3 col = mix(uCool, uWarm, lit);
+  if (uMediaMix > 0.0) {
+    vec2 m = uv * uMediaScale * 0.5 + 0.5;
+    m.y = 1.0 - m.y;                       // the cell FBO is y-up, video is not
+    vec3 pic = texture(uMedia, m).rgb * uMediaGain;
+    col = mix(col, pic * mix(0.30, 1.0, lit), uMediaMix);
+  }
+  outColor = vec4(col, 1.0);
 }`;
 
 // ---------------------------------------------------------------------------
 // Cell pass: shards
 // ---------------------------------------------------------------------------
-// One instanced draw for every shard. The static vertex buffer is a 14-vertex
-// triangle fan (centre + 13 rim points); aCorner indexes it, and the vertex
-// shader snaps the rim to a regular n-gon by quantising the fan angle. Shards
-// with fewer than 12 sides emit repeated rim vertices, i.e. degenerate
-// triangles the rasteriser discards — so 3- to 12-sided shards all come out of
-// the same buffer with no per-shape draw calls.
+// One instanced draw for every shard, whatever shape it is. The static vertex
+// buffer is a 27-vertex triangle fan (centre + 26 rim points, the last closing
+// the loop); aCorner indexes it and the vertex shader decides where each rim
+// point actually goes:
+//
+//   family 0  polygon — quantise the fan angle to an n-gon, 3..12 sides
+//   family 1  star    — same, with 2n corners alternating outer/inner radius
+//   family 2  sliver  — a quad squashed on one axis, i.e. a needle of glass
+//   family 3  glyph   — a square quad carrying atlas UVs: a letter or an emoji
+//
+// Shapes with fewer corners than the fan has rim points emit repeated vertices,
+// i.e. degenerate triangles the rasteriser discards — so every shape in the
+// cell comes out of one buffer with no per-shape draw calls.
 export const SHARD_VS = `#version 300 es
 precision highp float;
-layout(location = 0) in float aCorner;   // 0 = centre, 1..13 = rim
+layout(location = 0) in float aCorner;   // 0 = centre, 1..26 = rim
 layout(location = 1) in vec4  aXform;    // x, y, rotation, radius
 layout(location = 2) in vec4  aTint;     // rgb, opacity
-layout(location = 3) in vec2  aShape;    // sides, corner phase
+layout(location = 3) in vec4  aShape;    // sides, corner phase, family, aux
+uniform vec2 uAtlasDim;                  // atlas cells across, down
 out vec3  vTint;
 out float vAlpha;
 out float vEdge;
+out vec2  vGlyph;
 const float TAU = 6.28318530718;
+const float RIM = 25.0;
 void main() {
   vec2 local = vec2(0.0);
+  vec2 uv = vec2(0.5);
   vEdge = 0.0;
   if (aCorner > 0.5) {
-    float k = aCorner - 1.0;                            // 0..12 around the fan
-    float corner = floor(k * aShape.x / 12.0);          // quantise to n-gon
-    float a = corner / aShape.x * TAU + aShape.y;
-    local = vec2(cos(a), sin(a));
+    float k = aCorner - 1.0;              // 0..25 around the fan, 25 closing it
+    float fam = aShape.z;
+    if (fam < 1.5) {
+      // Polygon and star are the same walk; the star just has twice the corners
+      // and pulls every other one in to aShape.w.
+      float n = fam < 0.5 ? aShape.x : aShape.x * 2.0;
+      float corner = floor(k * n / RIM);
+      float a = corner / n * TAU + aShape.y;
+      float rr = (fam < 0.5 || mod(corner, 2.0) < 0.5) ? 1.0 : aShape.w;
+      local = vec2(cos(a), sin(a)) * rr;
+    } else {
+      // Four corners at 45 degrees: the square inscribed in the shard's disc,
+      // so a glyph is exactly as big as the collision radius says it is.
+      float corner = floor(k * 4.0 / RIM);
+      float a = corner * (TAU * 0.25) + 0.78539816;
+      vec2 c = vec2(cos(a), sin(a));
+      uv = c * 0.70710678 + 0.5;
+      if (fam < 2.5) c.y *= aShape.w;     // sliver: squash to a needle
+      local = c;
+    }
     vEdge = 1.0;
   }
   local *= aXform.w;
@@ -70,23 +113,44 @@ void main() {
   gl_Position = vec4(p, 0.0, 1.0);   // cell space IS clip space: the FBO is square
   vTint  = aTint.rgb;
   vAlpha = aTint.a;
+  // The atlas is laid out left-to-right, top-to-bottom, and is uploaded
+  // unflipped — so the v axis runs the other way from the cell's y.
+  float idx = aShape.w;
+  vGlyph = vec2(mod(idx, uAtlasDim.x) + uv.x,
+                floor(idx / uAtlasDim.x) + (1.0 - uv.y)) / uAtlasDim;
 }`;
 
-// Two blend behaviours share one shader, chosen by uGlint:
-//   0 — stained glass. Blended with (ZERO, SRC_COLOR), i.e. dst *= src, so
-//       overlapping shards multiply exactly the way stacked colour filters do:
-//       two greens deepen, red over green goes near-black. Fully transparent
-//       fragments emit white, which is the identity for a multiply.
-//   1 — bevel glint. Blended additively, and confined to the outer rim, for the
-//       specular catch off a shard's cut edge.
+// Three blend behaviours share one shader:
+//   uGlyph 0, uGlint 0 — stained glass. Blended with (ZERO, SRC_COLOR), i.e.
+//       dst *= src, so overlapping shards multiply exactly the way stacked
+//       colour filters do: two greens deepen, red over green goes near-black.
+//       Fully transparent fragments emit white, the identity for a multiply.
+//   uGlyph 0, uGlint 1 — bevel glint. Additive, confined to the outer rim, for
+//       the specular catch off a shard's cut edge.
+//   uGlyph 1 — the glyph atlas, multiplied the same way as the glass. uNative
+//       decides whether an emoji keeps its own colours or gets tinted by the
+//       palette; white text multiplied by the tint IS the tint, so one path
+//       covers letters and emoji both.
 export const SHARD_FS = `#version 300 es
 precision highp float;
 in vec3  vTint;
 in float vAlpha;
 in float vEdge;
+in vec2  vGlyph;
 uniform float uGlint;
+uniform float uGlyph;
+uniform float uNative;
+uniform sampler2D uAtlas;
 out vec4 outColor;
 void main() {
+  if (uGlyph > 0.5) {
+    vec4 g = texture(uAtlas, vGlyph);
+    float a = g.a * vAlpha;
+    if (a < 0.004) { outColor = vec4(1.0, 1.0, 1.0, 0.0); return; }
+    vec3 ink = mix(vTint * g.rgb, g.rgb, uNative);
+    outColor = vec4(mix(vec3(1.0), ink, a), a);
+    return;
+  }
   float bevel = smoothstep(0.72, 1.0, vEdge);
   if (uGlint > 0.5) {
     float rim = pow(bevel, 6.0);
@@ -115,6 +179,10 @@ void main() {
 // bounce costs a few percent of the light and warms it slightly. Applying
 // reflectance^bounces is what gives the image its authentic falloff toward the
 // rim, where the light has bounced a dozen times to reach the eye.
+//
+// uVision is the one part of this pass that is not optics: a colour-vision
+// deficiency matrix, applied last, so a palette can be checked against what a
+// dichromat actually sees rather than against what it is supposed to be.
 export const TUBE_FS = `#version 300 es
 precision highp float;
 uniform sampler2D uCell;
@@ -132,6 +200,7 @@ uniform float uAberration;
 uniform float uSeam;
 uniform float uAperture;
 uniform float uVignette;
+uniform mat3  uVision;
 out vec4 outColor;
 const float TAU = 6.28318530718;
 
@@ -210,5 +279,5 @@ void main() {
   col *= ap;
   col *= mix(1.0, smoothstep(1.55, 0.25, viewR), uVignette);
 
-  outColor = vec4(col, 1.0);
+  outColor = vec4(clamp(uVision * col, 0.0, 1.0), 1.0);
 }`;

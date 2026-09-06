@@ -8,6 +8,17 @@
 // in flat typed arrays and the per-frame instance upload writes straight into a
 // pre-allocated Float32Array, so a step allocates nothing.
 
+// Two kinds of palette. A SWATCH palette is a jar of glass: a handful of
+// discrete colours, and every shard is one of them, which is what a real object
+// cell is. A RAMP is continuous — the shard's draw indexes a gradient rather
+// than a bin — so the cell grades instead of speckling, and no two neighbouring
+// chips are quite the same colour.
+//
+// The three marked CVD-safe are the standard ones: Okabe-Ito, and Paul Tol's
+// bright and muted sets, all chosen so the hues stay distinguishable under
+// protan and deutan vision. Cividis and Viridis are the same idea for a ramp.
+// The Vision control in the mirror-tube panel simulates the deficiency, so a
+// palette can be checked rather than taken on trust.
 export const PALETTES = [
   { name: 'Stained glass', colors: ['#E23B4B','#F0A32A','#F5DE58','#3FA34D','#2E7BD1','#7B4BC4','#E0592C','#26B5A6'] },
   { name: 'Ember',         colors: ['#FF3B2F','#FF7A18','#FFB627','#F5E663','#C1272D','#7A1B12','#FF9E5E','#FFD9A0'] },
@@ -15,6 +26,28 @@ export const PALETTES = [
   { name: 'Neon',          colors: ['#FF2D95','#00F0FF','#B4FF39','#FFE600','#8A2BE2','#FF6B00','#00FF9C','#FF4FD8'] },
   { name: 'Botanical',     colors: ['#3E7C42','#7FB069','#C9DE8C','#E4B363','#A0522D','#5B8C5A','#D9CB9E','#2F5D50'] },
   { name: 'Smoke',         colors: ['#F0EDE8','#C9C5BE','#9B9B9B','#6E6E6E','#4A4A4A','#2C2C2C','#D8D2C8','#7F8B96'] },
+  { name: 'Confetti',      colors: ['#FF5D8F','#FFC145','#5BC0EB','#9BC53D','#C3A6FF','#FF8C42','#4ECDC4','#F7F0E8'] },
+  { name: 'Okabe–Ito · CVD safe',  colors: ['#E69F00','#56B4E9','#009E73','#F0E442','#0072B2','#D55E00','#CC79A7','#EDEDED'] },
+  { name: 'Tol bright · CVD safe', colors: ['#4477AA','#EE6677','#228833','#CCBB44','#66CCEE','#AA3377','#BBBBBB','#EE8866'] },
+  { name: 'Tol muted · CVD safe',  colors: ['#332288','#88CCEE','#44AA99','#117733','#999933','#DDCC77','#CC6677','#882255'] },
+  { name: 'Viridis · ramp',        kind: 'ramp', colors: ['#440154','#46327E','#365C8D','#277F8E','#1FA187','#4AC16D','#A0DA39','#FDE725'] },
+  { name: 'Magma · ramp',          kind: 'ramp', colors: ['#000004','#1D1147','#51127C','#822681','#B63679','#E65164','#FB8861','#FEC287','#FCFDBF'] },
+  { name: 'Cividis · CVD ramp',    kind: 'ramp', colors: ['#00224E','#123570','#3B496C','#575D6D','#707173','#8A8779','#A69D75','#C4B56C','#E1CC55','#FEE838'] },
+  { name: 'Sunset · ramp',         kind: 'ramp', colors: ['#0D1B4C','#452B72','#8B3A78','#C74E63','#EE7B4A','#FBB03B','#FFE08A'] },
+  { name: 'Spectrum · ramp',       kind: 'ramp', colors: ['#FF0040','#FF8A00','#F5E100','#39D353','#00C2C7','#2D6BFF','#8A2BE2','#FF0080'] },
+  { name: 'Duotone · ramp',        kind: 'ramp', colors: ['#12D8FA','#3B7BF5','#7A4BE0','#C13AC1','#FF4E88'] },
+];
+
+// The four shapes a shard can be. 'chips' is the original mixed n-gon jar;
+// 'glyphs' is exclusive because the shard shader takes a uniform branch on it
+// (a per-shard branch on a texture fetch is the one thing in this pass that
+// would actually cost something).
+export const SHAPES = [
+  { id: 'chips',   name: 'Glass chips' },
+  { id: 'stars',   name: 'Stars' },
+  { id: 'slivers', name: 'Slivers' },
+  { id: 'mixed',   name: 'Confetti mix' },
+  { id: 'glyphs',  name: 'Text & emoji' },
 ];
 
 const CELL_R = 1.0;          // the chamber is the unit disc; the FBO is its bbox
@@ -23,6 +56,22 @@ const MAX_RESTITUTION = 0.35;
 function hexToRgb(hex) {
   const n = parseInt(hex.slice(1), 16);
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
+}
+
+// Parsed palettes are cached on the palette object: _applyPalette runs on every
+// count change too, and re-parsing thirty hex strings each time a slider moves
+// is exactly the sort of thing that shows up as a sawtooth in the frame graph.
+function paletteRgb(p) {
+  if (!p._rgb) p._rgb = p.colors.map(hexToRgb);
+  return p._rgb;
+}
+
+function rampAt(stops, t) {
+  const n = stops.length - 1;
+  const x = Math.max(0, Math.min(0.999999, t)) * n;
+  const i = x | 0, f = x - i;
+  const a = stops[i], b = stops[i + 1];
+  return [a[0] + (b[0] - a[0]) * f, a[1] + (b[1] - a[1]) * f, a[2] + (b[2] - a[2]) * f];
 }
 
 // Deterministic PRNG, so "Refill" is reproducible from a seed and a shape that
@@ -55,12 +104,18 @@ export class ObjectCell {
     this.cr = new Float32Array(m); this.cg = new Float32Array(m); this.cb = new Float32Array(m);
     this.opacity = new Float32Array(m); // per-shard multiplier on the density slider
     this.slot = new Float32Array(m);    // palette index, as a 0..1 draw
+    // Shape draws, kept as raw 0..1 randoms rather than as resolved geometry:
+    // switching shape mode is then a repack, not a respawn, so the pile keeps
+    // its positions and the picture morphs instead of jumping.
+    this.famR = new Float32Array(m);    // which family, in 'mixed'
+    this.auxR = new Float32Array(m);    // star waist / sliver aspect
+    this.glyphR = new Float32Array(m);  // which character
 
     // Instance data. Split by update rate: the transform changes every frame,
     // the appearance only when a control moves, so the static half is uploaded
     // once instead of 300 times a second.
     this.xform = new Float32Array(m * 4);   // x, y, rotation, radius
-    this.style = new Float32Array(m * 6);   // r, g, b, alpha, sides, phase
+    this.style = new Float32Array(m * 8);   // rgb, alpha, sides, phase, family, aux
     this.styleDirty = true;
 
     // Broadphase scratch, sized for the finest grid we will ever build.
@@ -71,11 +126,15 @@ export class ObjectCell {
     this.stepHz = 180;
     this.paletteIndex = 0;
     this.densityAlpha = 0.55;
+    this.shapeMode = 'chips';
+    this.glyphCount = 1;
     this.setCount(360);
   }
 
   setCount(n) {
-    n = Math.max(1, Math.min(this.max, n | 0));
+    // Zero is allowed: an empty cell is how you look at a backdrop through the
+    // mirrors with no glass in the way.
+    n = Math.max(0, Math.min(this.max, n | 0));
     // Each shard gets its own stream, keyed on (seed, index). Sharing one
     // stream would mean the number of draws per shard had to be counted by
     // hand, and every shard already on screen would silently change identity
@@ -112,12 +171,18 @@ export class ObjectCell {
     this.phase[i] = rnd() * Math.PI * 2;
     this.opacity[i] = 0.55 + rnd() * 0.65;
     this.slot[i] = rnd();          // which palette entry, kept across palettes
+    this.famR[i] = rnd();
+    this.auxR[i] = rnd();
+    this.glyphR[i] = rnd();
   }
 
   _applyPalette() {
-    const pal = PALETTES[this.paletteIndex].colors.map(hexToRgb);
+    const p = PALETTES[this.paletteIndex];
+    const pal = paletteRgb(p);
+    const ramp = p.kind === 'ramp';
     for (let i = 0; i < this.count; i++) {
-      const c = pal[Math.floor(this.slot[i] * pal.length) % pal.length];
+      const c = ramp ? rampAt(pal, this.slot[i])
+        : pal[Math.floor(this.slot[i] * pal.length) % pal.length];
       this.cr[i] = c[0]; this.cg[i] = c[1]; this.cb[i] = c[2];
     }
     this.styleDirty = true;
@@ -125,6 +190,8 @@ export class ObjectCell {
 
   setPalette(index) { this.paletteIndex = index % PALETTES.length; this._applyPalette(); }
   setDensity(alpha) { this.densityAlpha = alpha; this.styleDirty = true; }
+  setShape(mode) { this.shapeMode = mode; this.styleDirty = true; }
+  setGlyphCount(n) { this.glyphCount = Math.max(1, n | 0); this.styleDirty = true; }
 
   setSize(scale) { this.sizeScale = scale; this._applySize(); }
 
@@ -318,14 +385,34 @@ export class ObjectCell {
     return this.count * 4;
   }
 
+  // Resolve each shard's shape for the current mode. The families are the ones
+  // SHARD_VS knows about: 0 polygon, 1 star, 2 sliver, 3 glyph — with the
+  // fourth component meaning the star's waist, the sliver's aspect, or the
+  // glyph's index into the atlas, depending on which.
   packStyle() {
     const s = this.style;
-    for (let i = 0, o = 0; i < this.count; i++, o += 6) {
+    const mode = this.shapeMode;
+    const gN = this.glyphCount;
+    for (let i = 0, o = 0; i < this.count; i++, o += 8) {
       s[o] = this.cr[i]; s[o + 1] = this.cg[i]; s[o + 2] = this.cb[i];
       s[o + 3] = Math.min(1, this.densityAlpha * this.opacity[i]);
-      s[o + 4] = this.sides[i]; s[o + 5] = this.phase[i];
+
+      let fam = 0, sides = this.sides[i], aux = 0;
+      if (mode === 'glyphs') {
+        fam = 3;
+        aux = Math.floor(this.glyphR[i] * gN) % gN;
+      } else if (mode === 'stars') {
+        fam = 1; sides = 5 + Math.floor(this.famR[i] * 4); aux = 0.34 + this.auxR[i] * 0.26;
+      } else if (mode === 'slivers') {
+        fam = 2; aux = 0.09 + this.auxR[i] * 0.28;
+      } else if (mode === 'mixed') {
+        const k = this.famR[i];
+        if (k > 0.78) { fam = 2; aux = 0.09 + this.auxR[i] * 0.28; }
+        else if (k > 0.48) { fam = 1; sides = 5 + Math.floor(this.auxR[i] * 4); aux = 0.34 + this.auxR[i] * 0.26; }
+      }
+      s[o + 4] = sides; s[o + 5] = this.phase[i]; s[o + 6] = fam; s[o + 7] = aux;
     }
     this.styleDirty = false;
-    return this.count * 6;
+    return this.count * 8;
   }
 }
