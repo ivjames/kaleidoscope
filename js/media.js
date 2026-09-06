@@ -140,6 +140,13 @@ export class MediaInput {
     this.ready = true;
     this.dirty = true;
     this._setAspect(v.videoWidth || 16, v.videoHeight || 9);
+    // A screen share changes size when the shared window does, and a stream's
+    // track can renegotiate mid-flight. The texture reallocates on its own, but
+    // the cover-fit scale would be left cropping to the old aspect.
+    if (!this._sized) {
+      this._sized = () => this._setAspect(v.videoWidth, v.videoHeight);
+      v.addEventListener('resize', this._sized);
+    }
     // requestVideoFrameCallback fires exactly when a new frame is available, so
     // the texture upload happens once per decoded frame instead of once per
     // rendered frame — which matters when the display is at 240 Hz and the
