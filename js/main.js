@@ -124,6 +124,15 @@ export function start(build) {
   // Declared up here because bind()'s formatter for the Shards slider reads its
   // `max` the moment the control is bound, which is before the block below.
   const countEl = $('c-count');
+
+  // How many shards were last *asked* for, as opposed to how many currently
+  // fit. Clamping a slider against a moving ceiling is lossy: without this,
+  // nudging Shard size up and back down again would leave the cell at the
+  // handful the big size allowed, and the count the person chose would be
+  // gone for good. The wish is what the slider is restored towards; only the
+  // clamped value reaches the sim and the store.
+  let countWish = S.count;
+
   const presetSel = $('c-preset');
   GLYPH_PRESETS.forEach((p, i) => {
     const o = document.createElement('option');
@@ -181,7 +190,7 @@ export function start(build) {
   bind('c-shape', 'shape', null, (v) => { cell.setShape(v); syncRows(); });
   bind('c-glyphs', 'glyphs', null, scheduleAtlas);
   bind('c-native', 'native');
-  bind('c-count', 'count', countLabel, (v) => setCount(v));
+  bind('c-count', 'count', countLabel, (v) => { countWish = v | 0; setCount(v); });
   bind('c-alpha', 'alpha', n2, (v) => cell.setDensity(v));
   bind('c-size', 'size', n2, (v) => { cell.setSize(v); refreshCountCap(); });
   bind('c-grav', 'gravity', n2);
@@ -217,12 +226,13 @@ export function start(build) {
   function refreshCountCap() {
     const cap = maxCountForSize(S.size, MAX_SHARDS);
     countEl.max = String(cap);
-    if (S.count > cap) {
-      // Setting max already clamps the control's value; do it explicitly so the
-      // sim and the store follow rather than drifting from what is on screen.
-      S.count = cap;
-      countEl.value = String(cap);
-      setCount(cap);
+    const want = Math.min(countWish, cap);
+    if (S.count !== want) {
+      // Setting max already clamps the control's value; do the rest explicitly
+      // so the sim and the store follow rather than drifting from the screen.
+      S.count = want;
+      countEl.value = String(want);
+      setCount(want);
       save();
     }
     $('o-count').textContent = countLabel(S.count);
@@ -299,6 +309,7 @@ export function start(build) {
       S[k] = k === 'secOpen' ? { ...DEFAULTS.secOpen } : DEFAULTS[k];
     }
     S.backdrop = media.kind;
+    countWish = DEFAULTS.count;
     // The ceiling first: writing a count past the slider's max would be clamped
     // by the control and the two would disagree from then on.
     refreshCountCap();
@@ -519,7 +530,8 @@ export function start(build) {
     if (typeof S.panelOpen !== 'boolean') S.panelOpen = DEFAULTS.panelOpen;
     // A count stored before the ceiling existed — or stored at a smaller shard
     // size — would otherwise come back as an over-packed, twitching cell.
-    S.count = Math.min(S.count, maxCountForSize(S.size, MAX_SHARDS));
+    // refreshCountCap does the clamping; this only has to be sane.
+    S.count = Math.max(0, Math.min(S.count | 0, MAX_SHARDS));
   }
 
   // ---- sparkline ----------------------------------------------------------

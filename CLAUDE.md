@@ -96,21 +96,30 @@ raising the window size costs one cheap pass instead of two.
   the circles already accepted. `_resolveShapes` holds the geometry that both
   `_support` and `packStyle` read, so the picture and the physics cannot
   disagree about what a shard is.
-- **Spin is not cosmetic, and that is exactly why it still needs a leash.** A
-  shard's angle decides its support radius, so it decides where its neighbours
-  touch it, and a contact landing off its centre line turns it
-  (`SHAPE_TORQUE`) — which is what makes a sliver end up lying flat against a
-  neighbour instead of balancing on a corner. That feedback is weak, though,
-  and it is not what runs spin away: grazes and the scrape along the chamber
-  wall are, and with the old coupling they took a settled cell to a mean near
-  2 rad/s with peaks around 8, which is not glass tumbling, it is a blur. A
-  weaker `SPIN_COUPLE` and a faster `SPIN_DECAY` hold it down now, every spin
-  input is weighted by `spinInertia` (a big statement piece barely turns, which
-  is most of what "too fast" looks like), and the Tumble slider scales the lot
-  — 0 stops rotation dead without freezing the pile. `SHAPE_TORQUE` is one more
-  way for contacts to pump it, so the test matters more than it used to, not
-  less: check a change to any of it against spawn-vs-settled, and if settled is
-  much higher, contacts are pumping again.
+- **Every bit of rotation in the cell is something a contact did.** Nothing
+  hands a shard spin from outside: a piece of glass is not born spinning, and
+  a shake is a push rather than a twist — shaking a real tube throws the pile
+  about, it does not reach in and turn each chip. The only two sources are in
+  `_pair` and `_walls`: `SPIN_COUPLE`, the tangential slip of a graze or a
+  scrape along the chamber wall, and `SHAPE_TORQUE`, a push landing off a
+  shard's own centre line, which is what makes a sliver rotate until it lies
+  flat against a neighbour instead of balancing on a corner. That second one
+  only exists because contacts are taken against the outline, so the shard's
+  angle decides where its neighbours touch it.
+  Emergent spin is also self-limiting in a way an injected one was not, since
+  a piece turning against its neighbours is doing work on them. What is left
+  is a `SPIN_DECAY` for drag, a `spinInertia` weighting so a big statement
+  piece barely turns (which is most of what "spinning too fast" looks like),
+  a `MAX_SPIN` that is a numerical guard rather than a feature, and the Tumble
+  slider scaling the lot — 0 stops rotation dead without freezing the pile.
+  The test for a change to any of it: start from rest and watch the mean at
+  five seconds against twenty. Contacts should spin most of the cell up and
+  then hold it there; if twenty is much higher than five, they are pumping.
+- **Mass comes off the outline too, not the bounding circle.** `areaK` is how
+  much glass is actually inside a shard's outline per unit of radius², and a
+  contact weights the two shards by it. Without that a needle shoulders a chip
+  aside on the strength of a circle it barely fills — a sliver averages 0.45
+  against a disc's π.
 - **The chamber is a disc of fixed size, so only so much glass fits in it.**
   `FILL_LIMIT` is the fraction of its area the shards may cover — 0.85, past
   random loose packing because a jar of glass *is* packed, but short of where
@@ -119,11 +128,20 @@ raising the window size costs one cheap pass instead of two.
   slider's maximum tracks, so raising Shard size lowers the ceiling. The slider
   used to run to 2400 at any size, which at the default size is roughly sixteen
   times over: the solver was being asked to unpick a pile with no solution, and
-  that is what the twitching and the overlapping were. Contacts are relaxed in
-  up to three passes per substep (`solverIters` tapers to one as the count
-  rises, to keep the cost bounded), with the velocity impulses on the first
-  pass only so a dense pile is unpicked without being damped into treacle — and
-  none of that converges on a pile that cannot fit in the first place.
+  that is what the twitching and the overlapping were.
+  That area cap is only half the limit, and `maxCountForSize`'s `hardMax` — 300,
+  in `js/main.js` — is the other half rather than a belt-and-braces duplicate of
+  it. Area fill only binds at large shard sizes, because gravity drags the whole
+  cell into a heap at the bottom whatever the fill fraction is: a thousand tiny
+  chips make a pile many layers deep, and a relaxation pass unpicks one layer.
+  At shard size 0.4 with 900 shards the chamber is under a third full by area
+  and the pile is still deeply interpenetrated. Below a certain size the binding
+  constraint stops being "does it fit" and becomes "can the solver resolve it",
+  which is a count and not an area.
+  Contacts are relaxed over `solverIters` passes per substep — three, dropping
+  to two past 180 shards to bound the cost — with the velocity impulses on the
+  first pass only, so a dense pile is unpicked without being damped into
+  treacle. Past three the returns are poor and the cost is linear.
 - **Agitation scales with `sqrt(h)`, not `h`.** It is a random walk on
   velocity, so only the square root of the step keeps its per-second amplitude
   the same at any step rate. Scaled with `h` the slider's whole range summed to
