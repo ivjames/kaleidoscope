@@ -251,13 +251,25 @@
          of them: a hit area that overflows its parent is painted over by
          whatever comes after it in the panel, so the bottom half of an
          "enlarged" button quietly does nothing. */
-      #panel header { min-height: 56px; align-items: center; }
+      #panel header { min-height: 56px; align-items: center; padding-top: 0; padding-bottom: 0; }
       #panel-toggle { align-self: stretch; align-items: center; padding: 0 12px; margin-right: -12px; }
       #hud-toggle { padding: 8px 12px 8px 0; margin-right: -12px; }
       .sec > summary { padding: 18px 0 16px; }
       .check { min-height: 44px; }
       #panel-body select, #panel-body button, .actions button, .btn-check span { padding: 14px 8px; }
-      input[type=range] { margin: 14px 0; }
+      /* The slider's own box is the 3px track, so it was the smallest target on
+         the panel and the one most worth hitting. Give the input real height
+         and move the visible track into a pseudo-element, so what you see is
+         unchanged and what you can hit is a finger tall. Margin would not do:
+         margin is not hit-testable. */
+      input[type=range] {
+        height: 30px; margin: 0; background: transparent;
+      }
+      input[type=range]::-webkit-slider-runnable-track {
+        height: 3px; background: var(--border);
+      }
+      input[type=range]::-moz-range-track { height: 3px; background: var(--border); }
+      input[type=range]::-webkit-slider-thumb { margin-top: -6px; }
     }
   </style>
 </head>

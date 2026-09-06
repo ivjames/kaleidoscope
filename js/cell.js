@@ -66,11 +66,17 @@ const TAU = Math.PI * 2;
 // and the whole cell twitches. The slider used to run to 2400 regardless of
 // shard size, which at the default size is roughly sixteen times over.
 //
-// FILL_LIMIT is the fraction of the chamber's area the glass may cover. 0.85 is
-// deliberately past random loose packing (~0.55) and near the dense limit — a
-// jar of glass IS packed. It is measured at the knee: at the default shard size
-// the pile settles to a median overlap of about 2-4% at this fill and degrades
-// sharply above it.
+// FILL_LIMIT is the fraction of the chamber's area the glass may cover, and it
+// is calibrated against the area of the OUTLINES. That distinction is what sets
+// the number: 0.85 was the right figure while this counted bounding circles,
+// and reusing it against outlines would be a different and much denser cell,
+// because 0.85 of the chamber in actual glass is past where randomly oriented
+// pieces jam. Measured across chips and glyphs, 0.62 settles to a median
+// contact depth of about 2% — which is what the old constant achieved in its
+// own terms — and 0.85 roughly doubles that. It also leaves the chips ceiling
+// within three of the 140 it has always been, so counting glass instead of
+// circles does not quietly make the default cell denser; it only stops
+// under-filling the chamber for everything that is not round.
 //
 // It is the area of the shards' *outlines*, not of their bounding circles, and
 // the difference is not academic. A disc fills its own circle; an emoji fills
@@ -78,7 +84,7 @@ const TAU = Math.PI * 2;
 // "full" of emoji held only a quarter of its area in glass and the slider
 // stopped a third of the way to a full cell — which is what oceans of space
 // between the characters actually was.
-export const FILL_LIMIT = 0.85;
+export const FILL_LIMIT = 0.62;
 // E[baseR^2] for the spawn distribution below: baseR = 0.018 + t^2.4 * 0.075,
 // t uniform. Integrated once here rather than sampled, so the cap is stable.
 const MEAN_R2 = 0.002088;

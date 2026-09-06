@@ -121,9 +121,17 @@ raising the window size costs one cheap pass instead of two.
   aside on the strength of a circle it barely fills — a sliver averages 0.45
   against a disc's π.
 - **The chamber is a disc of fixed size, so only so much glass fits in it.**
-  `FILL_LIMIT` is the fraction of its area the shards may cover — 0.85, past
-  random loose packing because a jar of glass *is* packed, but short of where
-  the relaxation passes stop converging — and `maxCountForSize` turns that into
+  `FILL_LIMIT` is the fraction of its area the shards may cover — 0.62, which is
+  calibrated against the area of the *outlines*, and that is what sets the
+  number rather than any packing intuition: 0.85 was right while this counted
+  bounding circles, and reusing it against outlines would be a far denser cell,
+  because 0.85 of the chamber in real glass is past where randomly oriented
+  pieces jam. Measured across chips and glyphs, 0.62 settles to a median contact
+  depth of about 2%, which is what the old figure achieved in its own terms, and
+  it leaves the chips ceiling within a few of the 140 it has always been — so
+  counting glass rather than circles does not quietly densify the default cell,
+  it only stops under-filling the chamber for everything that is not round.
+  `maxCountForSize` turns that into
   the largest count that fits at the current shard size *and shape*. It is the
   area of the outlines, not of the bounding circles, and the difference is the
   whole ballgame for anything that is not round: a disc fills its own circle, an

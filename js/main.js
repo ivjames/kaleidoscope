@@ -288,25 +288,37 @@ export function start(build) {
     for (const sec of secs) sec.open = S.secOpen[sec.id];
   }
 
-  // Both a click and a tap, because on iOS the click is not guaranteed. The page
-  // sets `touch-action: none` so the canvas does not pan under a drag, and
-  // WebKit then reads the few pixels a finger rolls between touchdown and lift
-  // as a gesture and declines to synthesise the click — the control lights up
-  // under the finger and nothing happens, which is exactly what a fold toggle
-  // looks like when it is "broken" on an iPad and fine on a desktop. Acting on
-  // pointerup as well costs nothing and does not wait for the synthesis.
+  // Insurance, not the fix. The fix is that `touch-action: none` now sits on the
+  // canvas instead of the body, so iOS is no longer being asked to suppress the
+  // gestures its tap-to-click synthesis rides on. But that fault could not be
+  // reproduced here — a synthetic tap goes straight to the click, gesture
+  // recognizer or not, so it passes in a headless browser either way — and the
+  // cost of being wrong is another round trip on a device I cannot see. So the
+  // buttons this file drives also act on the tap itself.
   //
-  // The click still has to be handled: it is what a keyboard's Enter and Space
-  // arrive as, and a mouse is left to it entirely.
+  // What this does NOT cover: the <summary> folds and the Pause label, whose
+  // activation is the browser's own. If the diagnosis above is right they are
+  // fixed with everything else; if it is wrong they are the remaining half.
   const onTap = (el, fn) => {
-    let handled = 0;
+    let lifted = 0;
     el.addEventListener('pointerup', (e) => {
-      if (e.pointerType === 'mouse') return;
-      handled = e.timeStamp;
+      if (e.pointerType === 'mouse') return;      // a mouse has a reliable click
+      // Touch gives the pointerup to whatever took the pointerdown, even when
+      // the finger has slid somewhere else entirely. Sliding off a control and
+      // letting go is how a tap is cancelled, so honour that.
+      const r = el.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
+        lifted = 0;
+        return;
+      }
+      lifted = e.timeStamp;
       fn();
     });
     el.addEventListener('click', (e) => {
-      if (handled && e.timeStamp - handled < 700) return;   // already done on the tap
+      // detail 0 is a keyboard activation — Enter or Space on a focused button —
+      // which has no tap behind it and must never be swallowed.
+      if (e.detail !== 0 && lifted && e.timeStamp - lifted < 500) return;
+      lifted = 0;
       fn();
     });
   };
@@ -334,7 +346,7 @@ export function start(build) {
   // alone: the backdrop, which is never persisted and which a reset must not
   // use as an excuse to reach for the camera, and view.roll, because throwing
   // the tube back to zero looks like a glitch rather than a reset.
-  $('b-reset').addEventListener('click', () => {
+  onTap($('b-reset'), () => {
     for (const k of Object.keys(DEFAULTS)) {
       S[k] = k === 'secOpen' ? { ...DEFAULTS.secOpen } : DEFAULTS[k];
     }
@@ -389,8 +401,8 @@ export function start(build) {
   presetSel.addEventListener('input', loadPreset);
   presetSel.addEventListener('change', loadPreset);
 
-  $('b-shake').addEventListener('click', () => cell.shake(2.2));
-  $('b-refill').addEventListener('click', () => cell.refill());
+  onTap($('b-shake'), () => cell.shake(2.2));
+  onTap($('b-refill'), () => cell.refill());
 
   // ---- backdrop -----------------------------------------------------------
   const backSel = $('c-backdrop');
