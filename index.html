@@ -217,6 +217,12 @@
       #spark { width: 150px; }
       #keys { display: none; }
       .g2 { gap: 0 10px; }
+      /* The desktop fold clears `bottom` so the panel can shrink to its header
+         between top:16 and bottom:16. Here the panel is a bottom sheet with
+         `top: auto`, so clearing `bottom` too would leave it with neither
+         offset — it would fall back to its static position at the top of the
+         screen, on top of the HUD, instead of collapsing in place. */
+      body.panel-min #panel { bottom: 8px; }
     }
   </style>
 </head>

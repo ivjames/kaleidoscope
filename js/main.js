@@ -52,6 +52,10 @@ const S = {
   glyphs: '✦✧★☆✺❉',
   native: false,
   count: 130,
+  // What was last *asked* for on the Shards slider, as against how many
+  // currently fit. Stored beside the applied count so the choice survives a
+  // reload taken at a large shard size — see refreshCountCap.
+  countWish: 130,
   alpha: 0.8,
   size: 1.7,
   gravity: 0.9,
@@ -125,14 +129,6 @@ export function start(build) {
   // `max` the moment the control is bound, which is before the block below.
   const countEl = $('c-count');
 
-  // How many shards were last *asked* for, as opposed to how many currently
-  // fit. Clamping a slider against a moving ceiling is lossy: without this,
-  // nudging Shard size up and back down again would leave the cell at the
-  // handful the big size allowed, and the count the person chose would be
-  // gone for good. The wish is what the slider is restored towards; only the
-  // clamped value reaches the sim and the store.
-  let countWish = S.count;
-
   const presetSel = $('c-preset');
   GLYPH_PRESETS.forEach((p, i) => {
     const o = document.createElement('option');
@@ -190,7 +186,7 @@ export function start(build) {
   bind('c-shape', 'shape', null, (v) => { cell.setShape(v); syncRows(); });
   bind('c-glyphs', 'glyphs', null, scheduleAtlas);
   bind('c-native', 'native');
-  bind('c-count', 'count', countLabel, (v) => { countWish = v | 0; setCount(v); });
+  bind('c-count', 'count', countLabel, (v) => setCount(v));
   bind('c-alpha', 'alpha', n2, (v) => cell.setDensity(v));
   bind('c-size', 'size', n2, (v) => { cell.setSize(v); refreshCountCap(); });
   bind('c-grav', 'gravity', n2);
@@ -204,6 +200,13 @@ export function start(build) {
   bind('c-target', 'target', (v) => String(v));
   bind('c-glint', 'glints');
   bind('c-pause', 'paused');
+
+  // Deliberately a listener rather than bind()'s onChange: bind pushes once at
+  // setup, and refreshCountCap writes the clamped value straight into the
+  // control. Either would otherwise overwrite the wish with the clamp and undo
+  // the whole point of keeping it.
+  countEl.addEventListener('input', () => { S.countWish = countEl.value | 0; save(); });
+  countEl.addEventListener('change', () => { S.countWish = countEl.value | 0; save(); });
 
   function setCount(v) {
     const n = v | 0;
@@ -226,7 +229,7 @@ export function start(build) {
   function refreshCountCap() {
     const cap = maxCountForSize(S.size, MAX_SHARDS);
     countEl.max = String(cap);
-    const want = Math.min(countWish, cap);
+    const want = Math.min(S.countWish, cap);
     if (S.count !== want) {
       // Setting max already clamps the control's value; do the rest explicitly
       // so the sim and the store follow rather than drifting from the screen.
@@ -309,7 +312,6 @@ export function start(build) {
       S[k] = k === 'secOpen' ? { ...DEFAULTS.secOpen } : DEFAULTS[k];
     }
     S.backdrop = media.kind;
-    countWish = DEFAULTS.count;
     // The ceiling first: writing a count past the slider's max would be clamped
     // by the control and the two would disagree from then on.
     refreshCountCap();
@@ -372,13 +374,28 @@ export function start(build) {
   // opens two capture prompts and tears the first stream down under the second.
   let backdropAct = 'off';
 
-  // iOS and iPadOS have no screen-capture API at all — not in Safari, and not
-  // in the Chrome or Firefox skins either, since they are all the same WebKit
-  // underneath. Say so on the option rather than letting the pick fail with a
-  // one-line error after the fact.
-  if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
-    const opt = backSel.querySelector('option[value="screen"]');
-    if (opt) { opt.disabled = true; opt.textContent += ' — not on iOS/iPadOS'; }
+  // Say up front which capture routes this browser has, rather than letting the
+  // pick fail with a one-line error after the fact. Two quite different causes,
+  // and naming the wrong one sends people hunting in the wrong place:
+  //
+  //   no navigator.mediaDevices at all — an insecure context. Neither camera
+  //     nor screen exists, and it is the page not being on https rather than
+  //     anything about the platform.
+  //   mediaDevices but no getDisplayMedia — iOS and iPadOS, which have no
+  //     screen-capture API in any browser, Chrome and Firefox included, since
+  //     they are all the same WebKit underneath. The camera still works.
+  {
+    const md = navigator.mediaDevices;
+    const mark = (value, why) => {
+      const opt = backSel.querySelector(`option[value="${value}"]`);
+      if (opt) { opt.disabled = true; opt.textContent += why; }
+    };
+    if (!md || !window.isSecureContext) {
+      mark('camera', ' — needs https');
+      mark('screen', ' — needs https');
+    } else if (typeof md.getDisplayMedia !== 'function') {
+      mark('screen', ' — not on iOS/iPadOS');
+    }
   }
 
   function onMediaChange(m) {
@@ -478,8 +495,14 @@ export function start(build) {
   const tubeKeys = ['rosette', '333', '236', '244'];
   const shapeKeys = SHAPES.map((s) => s.id);
   addEventListener('keydown', (e) => {
-    if (e.target.tagName === 'INPUT' || e.target.tagName === 'SELECT' || e.target.tagName === 'TEXTAREA') return;
+    const tag = e.target.tagName;
+    if (tag === 'INPUT' || tag === 'SELECT' || tag === 'TEXTAREA') return;
     const k = e.key.toLowerCase();
+    // Space activates a button and a <details> summary. Now that Shake, Refill,
+    // Pause and Reset are always on screen and every section header is
+    // focusable, hijacking it for the shake made the panel unusable from the
+    // keyboard — the key did nothing except stop the control it was aimed at.
+    if ((k === ' ' || k === 'enter') && (tag === 'BUTTON' || tag === 'SUMMARY')) return;
     if (k === ' ') { e.preventDefault(); cell.shake(2.4); }
     else if (k === 'h') document.body.classList.toggle('chrome-off');
     else if (k === 'c') togglePanel();
@@ -532,6 +555,8 @@ export function start(build) {
     // size — would otherwise come back as an over-packed, twitching cell.
     // refreshCountCap does the clamping; this only has to be sane.
     S.count = Math.max(0, Math.min(S.count | 0, MAX_SHARDS));
+    S.countWish = Number.isFinite(S.countWish)
+      ? Math.max(0, Math.min(S.countWish | 0, MAX_SHARDS)) : S.count;
   }
 
   // ---- sparkline ----------------------------------------------------------
