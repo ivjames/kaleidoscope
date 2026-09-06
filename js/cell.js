@@ -53,6 +53,35 @@ export const SHAPES = [
 const CELL_R = 1.0;          // the chamber is the unit disc; the FBO is its bbox
 const MAX_RESTITUTION = 0.35;
 
+// --- how fast the glass turns -----------------------------------------------
+//
+// Spin is purely cosmetic here: the shards collide as discs, so a shard's angle
+// feeds nothing back into the physics. That is exactly why it needed reining
+// in — nothing in the sim was pushing back on it.
+//
+// Every graze and every scrape along the chamber wall adds spin, and with the
+// old coupling that pumped a settled cell up to a mean of ~2 rad/s with peaks
+// near 8 (over a turn a second), which is not glass tumbling, it is a blur.
+// Three things hold it down now: a much weaker coupling, a faster decay, and
+// SPIN_INERTIA below.
+const SPIN_COUPLE = 0.13;    // spin picked up per unit of tangential slip
+const SPIN_DECAY = 2.6;      // e-folds per second once nothing is touching it
+const SPIN_KICK = 2.6;       // the impulse a shake delivers
+const SPIN_SPAWN = 1.2;      // the drift a shard is born with
+const MAX_SPIN = 3.5;        // hard ceiling, rad/s, before the size weighting
+
+// A big statement piece has far more angular inertia than a chip, so the same
+// graze should barely turn it — and the big pieces are the ones the eye tracks,
+// so they are most of what "spinning too fast" means. Weight every spin input
+// by this, computed once per shard from its radius before the size slider (the
+// slider scales the whole jar for looks; it should not change how the pile
+// behaves). Normalised so a mid-sized chip sits at 1.
+const SPIN_REF_R = 0.045;
+function spinInertia(baseR) {
+  const k = baseR / SPIN_REF_R;
+  return 2 / (1 + k * k);
+}
+
 function hexToRgb(hex) {
   const n = parseInt(hex.slice(1), 16);
   return [((n >> 16) & 255) / 255, ((n >> 8) & 255) / 255, (n & 255) / 255];
@@ -97,6 +126,7 @@ export class ObjectCell {
     this.px = new Float32Array(m); this.py = new Float32Array(m);
     this.vx = new Float32Array(m); this.vy = new Float32Array(m);
     this.ang = new Float32Array(m); this.spin = new Float32Array(m);
+    this.invI = new Float32Array(m);    // 1/angular inertia, weighting every spin input
     this.baseR = new Float32Array(m);   // radius before the size slider
     this.rad = new Float32Array(m);
     this.sides = new Float32Array(m);
@@ -124,8 +154,14 @@ export class ObjectCell {
 
     this.accumulator = 0;
     this.stepHz = 180;
+    // Declared here rather than sprouted on the first update: _step rewrites
+    // them every substep and _pair/_walls read them, and this file's whole
+    // contract is that a step surprises the engine with nothing.
+    this._spinK = 0;
+    this._spinCap = 0;
     this.paletteIndex = 0;
     this.densityAlpha = 0.55;
+    this.tumble = 1;
     this.shapeMode = 'chips';
     this.glyphCount = 1;
     this.setCount(360);
@@ -163,10 +199,15 @@ export class ObjectCell {
     this.vx[i] = (rnd() - 0.5) * 0.5;
     this.vy[i] = (rnd() - 0.5) * 0.5;
     this.ang[i] = rnd() * Math.PI * 2;
-    this.spin[i] = (rnd() - 0.5) * 3;
+    // Drawn here to keep this stream's draw order stable, but scaled below:
+    // the weighting depends on the radius, which is not known until the next
+    // draw, and reordering the draws would change what a seed produces.
+    const spin0 = (rnd() - 0.5) * SPIN_SPAWN;
     // Heavy tail: a real cell is mostly chips with a few big statement pieces.
     const t = rnd();
     this.baseR[i] = 0.018 + Math.pow(t, 2.4) * 0.075;
+    this.invI[i] = spinInertia(this.baseR[i]);
+    this.spin[i] = spin0 * this.invI[i];
     this.sides[i] = 3 + Math.floor(rnd() * 6);
     this.phase[i] = rnd() * Math.PI * 2;
     this.opacity[i] = 0.55 + rnd() * 0.65;
@@ -190,6 +231,7 @@ export class ObjectCell {
 
   setPalette(index) { this.paletteIndex = index % PALETTES.length; this._applyPalette(); }
   setDensity(alpha) { this.densityAlpha = alpha; this.styleDirty = true; }
+  setTumble(t) { this.tumble = Math.max(0, t); }
   setShape(mode) { this.shapeMode = mode; this.styleDirty = true; }
   setGlyphCount(n) { this.glyphCount = Math.max(1, n | 0); this.styleDirty = true; }
 
@@ -212,7 +254,7 @@ export class ObjectCell {
       const s = strength * (0.6 + Math.random() * 1.6);
       this.vx[i] += Math.cos(a) * s;
       this.vy[i] += Math.sin(a) * s;
-      this.spin[i] += (Math.random() - 0.5) * strength * 12;
+      this.spin[i] += (Math.random() - 0.5) * strength * SPIN_KICK * this.invI[i] * this.tumble;
     }
   }
 
@@ -241,7 +283,12 @@ export class ObjectCell {
     const gy = -Math.cos(roll) * gravity;
 
     const damp = Math.exp(-0.55 * h);
+    const spinDamp = Math.exp(-SPIN_DECAY * h);
     const jitter = agitation * 9.0;
+    // Read once per substep by _pair and _walls, which is cheaper than handing
+    // the same two numbers down through every contact.
+    this._spinK = SPIN_COUPLE * this.tumble;
+    this._spinCap = MAX_SPIN * this.tumble;
 
     for (let i = 0; i < n; i++) {
       let vx = this.vx[i] + gx * h;
@@ -262,7 +309,11 @@ export class ObjectCell {
       this.px[i] += vx * h;
       this.py[i] += vy * h;
       this.ang[i] += this.spin[i] * h;
-      this.spin[i] *= Math.exp(-1.6 * h);
+      // Decay, then clip. Clipping here rather than after the contact passes
+      // costs nothing extra and is a substep behind, which is invisible.
+      let sp = this.spin[i] * spinDamp;
+      const cap = this._spinCap * this.invI[i];
+      this.spin[i] = sp > cap ? cap : (sp < -cap ? -cap : sp);
     }
 
     this._collide();
@@ -347,9 +398,9 @@ export class ObjectCell {
     this.vx[j] += nx * imp * wj; this.vy[j] += ny * imp * wj;
 
     // Grazing contacts set the pieces turning.
-    const tang = -rvx * ny + rvy * nx;
-    this.spin[i] -= tang * 0.6;
-    this.spin[j] += tang * 0.6;
+    const tang = (-rvx * ny + rvy * nx) * this._spinK;
+    this.spin[i] -= tang * this.invI[i];
+    this.spin[j] += tang * this.invI[j];
   }
 
   _walls() {
@@ -370,7 +421,7 @@ export class ObjectCell {
       const tx = -ny, ty = nx;
       const vt = this.vx[i] * tx + this.vy[i] * ty;
       this.vx[i] -= vt * 0.25 * tx; this.vy[i] -= vt * 0.25 * ty;
-      this.spin[i] += vt * 0.6;
+      this.spin[i] += vt * this._spinK * this.invI[i];
     }
   }
 
