@@ -53,12 +53,12 @@ controls; the rest are ES modules loaded straight from `js/`.
 
 | file | what it owns |
 |---|---|
-| `js/cell.js` | the object cell — the disc of tumbling glass. Rigid-disc sim, counting-sort broadphase, fixed 180 Hz timestep. Also the palettes and the shape modes. Pure CPU, no GL. |
+| `js/cell.js` | the object cell — the disc of tumbling glass. Counting-sort broadphase, contacts taken against each shard's real outline, a relaxation solver on a fixed 180 Hz timestep, and the fill cap that bounds how much glass the chamber holds. Also the palettes and the shape modes. Pure CPU, no GL. |
 | `js/shaders.js` | the three GLSL ES 3.00 programs, as strings. |
 | `js/renderer.js` | WebGL2: FBO, instancing, blend state, the three textures, the mirror-tube geometry, GPU timing. |
 | `js/glyphs.js` | rasterises a character set into the glyph atlas, with canvas2D. No GL — it hands the renderer a canvas. |
 | `js/media.js` | the backdrop sources: camera, screen share, dropped file. Owns the stream and the video element, not the texture. |
-| `js/main.js` | frame loop, controls, input, frame-rate metrics, adaptive scale. |
+| `js/main.js` | frame loop, controls (including the Shards ceiling, which tracks shard size), input, frame-rate metrics, adaptive scale. |
 
 The render is two passes: the cell is drawn once into an offscreen square
 texture (one instanced draw for every shard), then a single full-screen
@@ -82,16 +82,70 @@ raising the window size costs one cheap pass instead of two.
   greedy version and it does not reliably converge — it ping-pongs between two
   mirrors and leaves far-out points unfolded, which shows on screen as flat
   unresolved patches in the corners at a wide field of view.
-- **Spin is cosmetic, which is why it needed a leash.** A shard's angle feeds
-  nothing back into the sim — the pieces collide as discs — so nothing was
-  pushing back when contacts pumped it up. They did: a settled cell used to
-  drift from 0.75 rad/s at spawn to a mean near 2 with peaks around 8, and a
-  shake spiked past 17. The constants at the top of `js/cell.js` hold it near
-  0.35 now, every input is weighted by `spinInertia` (a big statement piece
-  barely turns, which is most of what "too fast" looks like), and the Tumble
-  slider scales the lot — 0 stops rotation dead without freezing the pile.
-  Check a change to any of it against spawn-vs-settled: if settled is much
-  higher, contacts are pumping again.
+- **Shards collide as their shapes, not as circles.** `_support(i, θ)` in
+  `js/cell.js` returns how far a shard's outline actually reaches in a world
+  direction — exact for all four families, because polygon and star are a walk
+  over the same chords `SHARD_VS` draws and sliver and glyph are a rectangle in
+  the shard's own frame. The contact test is then
+  `d < support(i, θ) + support(j, θ+π)`; the bounding circles survive only as
+  the cheap reject that gets a pair as far as that test, and `_walls` uses the
+  same call, so a sliver lying flat reaches the chamber wall and end-on stands
+  off it. Full convex-polygon contact — SAT, clipped manifolds, two-point
+  contacts — is the heavier and different sim this deliberately is not: this
+  one is exact along the contact normal and pays its trig only for the pairs
+  the circles already accepted. `_resolveShapes` holds the geometry that both
+  `_support` and `packStyle` read, so the picture and the physics cannot
+  disagree about what a shard is.
+- **Every bit of rotation in the cell is something a contact did.** Nothing
+  hands a shard spin from outside: a piece of glass is not born spinning, and
+  a shake is a push rather than a twist — shaking a real tube throws the pile
+  about, it does not reach in and turn each chip. The only two sources are in
+  `_pair` and `_walls`: `SPIN_COUPLE`, the tangential slip of a graze or a
+  scrape along the chamber wall, and `SHAPE_TORQUE`, a push landing off a
+  shard's own centre line, which is what makes a sliver rotate until it lies
+  flat against a neighbour instead of balancing on a corner. That second one
+  only exists because contacts are taken against the outline, so the shard's
+  angle decides where its neighbours touch it.
+  Emergent spin is also self-limiting in a way an injected one was not, since
+  a piece turning against its neighbours is doing work on them. What is left
+  is a `SPIN_DECAY` for drag, a `spinInertia` weighting so a big statement
+  piece barely turns (which is most of what "spinning too fast" looks like),
+  a `MAX_SPIN` that is a numerical guard rather than a feature, and the Tumble
+  slider scaling the lot — 0 stops rotation dead without freezing the pile.
+  The test for a change to any of it: start from rest and watch the mean at
+  five seconds against twenty. Contacts should spin most of the cell up and
+  then hold it there; if twenty is much higher than five, they are pumping.
+- **Mass comes off the outline too, not the bounding circle.** `areaK` is how
+  much glass is actually inside a shard's outline per unit of radius², and a
+  contact weights the two shards by it. Without that a needle shoulders a chip
+  aside on the strength of a circle it barely fills — a sliver averages 0.45
+  against a disc's π.
+- **The chamber is a disc of fixed size, so only so much glass fits in it.**
+  `FILL_LIMIT` is the fraction of its area the shards may cover — 0.85, past
+  random loose packing because a jar of glass *is* packed, but short of where
+  the relaxation passes stop converging — and `maxCountForSize` turns that into
+  the largest count that fits at the current shard size. It is what the Shards
+  slider's maximum tracks, so raising Shard size lowers the ceiling. The slider
+  used to run to 2400 at any size, which at the default size is roughly sixteen
+  times over: the solver was being asked to unpick a pile with no solution, and
+  that is what the twitching and the overlapping were.
+  That area cap is only half the limit, and `maxCountForSize`'s `hardMax` — 300,
+  in `js/main.js` — is the other half rather than a belt-and-braces duplicate of
+  it. Area fill only binds at large shard sizes, because gravity drags the whole
+  cell into a heap at the bottom whatever the fill fraction is: a thousand tiny
+  chips make a pile many layers deep, and a relaxation pass unpicks one layer.
+  At shard size 0.4 with 900 shards the chamber is under a third full by area
+  and the pile is still deeply interpenetrated. Below a certain size the binding
+  constraint stops being "does it fit" and becomes "can the solver resolve it",
+  which is a count and not an area.
+  Contacts are relaxed over `solverIters` passes per substep — three, dropping
+  to two past 180 shards to bound the cost — with the velocity impulses on the
+  first pass only, so a dense pile is unpicked without being damped into
+  treacle. Past three the returns are poor and the cost is linear.
+- **Agitation scales with `sqrt(h)`, not `h`.** It is a random walk on
+  velocity, so only the square root of the step keeps its per-second amplitude
+  the same at any step rate. Scaled with `h` the slider's whole range summed to
+  far less than gravity, which is why it read as a control that did nothing.
 - **Every shard shape comes out of one 27-vertex fan.** `SHARD_VS` decides per
   instance where each rim vertex lands: an n-gon, a star (twice the corners,
   every other one pulled in), a sliver (a quad squashed on one axis), or a
@@ -120,9 +174,17 @@ raising the window size costs one cheap pass instead of two.
 - **The backdrop is never persisted.** Everything else in the control panel is
   saved to localStorage; a reload must not reach for the camera on its own, and
   a dropped file's object URL died with the session.
+- **The control panel folds; it does not scroll.** Its four sections are
+  `<details>`, the body collapses into the title bar, and the HUD collapses to
+  the bare frame count — so the panel fits on the screen at any setting instead
+  of growing a scrollbar over the picture. Shake, Refill, Pause and Reset live
+  in a permanent action bar outside the folding sections, because they are the
+  ones you reach for while watching the glass rather than while reading the
+  panel.
 - **`index.html` carries the `BUILD` constant** at two-space indentation, which
   is what `kaleidoscope deploy` stamps and `kaleidoscope status` reads back.
-  Keep it on its own line in that form or the stamp silently stops working.
+  Keep it on its own line in that form or the stamp silently stops working. It
+  is shown in the panel's title bar, which is the half that survives the fold.
 - The droplet checkout is the web root, so anything committed here is public
   except dotfiles and `*.md` (the vhost denies both). A static site has no
   `.env` and no secrets to hold.

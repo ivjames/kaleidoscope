@@ -4,8 +4,10 @@ A high-FPS WebGL2 kaleidoscope **simulation** — not a shader that fakes the
 symmetry, but the two things a kaleidoscope is actually made of:
 
 - **An object cell.** The shallow disc of loose coloured glass at the far end of
-  the tube, simulated as rigid discs on a fixed 180 Hz timestep with a
-  counting-sort broadphase. Gravity is fixed in the world and the cell turns
+  the tube, simulated on a fixed 180 Hz timestep with a counting-sort
+  broadphase and contacts taken against each piece's real outline rather than
+  its bounding circle — so a sliver settles lying against its neighbour instead
+  of balancing on a corner. Gravity is fixed in the world and the cell turns
   with the tube, so rolling it makes the pile slide — which is the entire feel
   of holding one.
 - **A mirror tube.** Four real tubes: the two-mirror V that makes a rosette, and
@@ -27,9 +29,9 @@ instance in the vertex shader, covers every one of these in a single draw:
 - **Stars**, **slivers** (needles of glass), and a **confetti mix** of all three.
 - **Text and emoji.** Type anything into the box — letters, digits, `∫≈≠`,
   🔮💎🌸 — or load a preset. The characters are rasterised once into a glyph
-  atlas and each shard samples its own cell of it, so 2400 tumbling emoji cost
-  the same draw call as 2400 hexagons. Emoji can keep their own colours or take
-  the palette's.
+  atlas and each shard samples its own cell of it, so a cellful of tumbling
+  emoji costs the same draw call as a cellful of hexagons. Emoji can keep their
+  own colours or take the palette's.
 
 Sixteen palettes: the original jars, three colourblind-safe swatch sets
 (Okabe–Ito, Tol bright, Tol muted) and six continuous **gradient ramps**
@@ -37,6 +39,10 @@ Sixteen palettes: the original jars, three colourblind-safe swatch sets
 is a point on the ramp rather than one of eight bins. The **Vision** control
 simulates protanopia, deuteranopia, tritanopia and achromatopsia on the
 finished image, so a palette can be checked rather than taken on trust.
+
+Whatever is in it, the chamber is a disc of fixed size, and only so much glass
+fits before the pile has no settled state left to find. The Shards slider stops
+at what actually fits, so turning the shard size up brings its ceiling down.
 
 ## What can be behind it
 
@@ -66,14 +72,15 @@ before it will work on the live site; see `DEPLOY.md`.)
 | `1`–`4` | mirror tube |
 | `s` | cycle the shard shape |
 | `space` | shake · `r` refill · `p` pause |
-| `h` | hide the chrome · `f` fullscreen |
+| `c` | fold the controls · `h` hide the chrome · `f` fullscreen |
 
 ## Frame rate
 
 The HUD reports mean frame time, the 99th-percentile frame time (the stutters a
 mean hides), GPU time where `EXT_disjoint_timer_query_webgl2` is available, and
-the CPU cost of the sim. Adaptive scale holds a target frame rate by moving the
-render scale in small steps — deliberately small, because a resolution that
+the CPU cost of the sim — or folds to the bare frame count when you want the
+corner of the screen back. Adaptive scale holds a target frame rate by moving
+the render scale in small steps — deliberately small, because a resolution that
 chases every dip is more distracting than the dip.
 
 There is no frame cap: the loop is one `requestAnimationFrame` with nothing

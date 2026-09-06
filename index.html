@@ -54,15 +54,26 @@
       background: rgba(17,17,17,.82);
       border: 1px solid var(--border);
       backdrop-filter: blur(6px);
-      padding: 12px 14px;
+      padding: 10px 14px 12px;
       min-width: 216px;
     }
-    #hud .fps-row { display: flex; align-items: baseline; gap: 8px; }
+    /* The whole fps line is the collapse control: tapping the number leaves the
+       raw frame count and folds the graph and the breakdown away. */
+    #hud-toggle {
+      display: flex; align-items: baseline; gap: 8px;
+      width: auto; background: none; border: 0; padding: 0;
+      font-family: var(--mono); color: inherit; cursor: pointer;
+    }
+    #hud-toggle:hover .caret, #hud-toggle:hover .fps-unit { color: var(--accent); }
     #fps { font-size: 30px; font-weight: 700; line-height: 1; letter-spacing: -.02em; }
     #fps.is-good { color: var(--good); }
     #fps.is-warn { color: var(--warn); }
     #fps.is-bad  { color: var(--bad); }
     .fps-unit { font-size: 10px; letter-spacing: .28em; text-transform: uppercase; color: var(--faint); }
+    #hud-toggle .caret { font-size: 9px; color: var(--faint); margin-left: 2px; }
+    body.hud-min #hud { min-width: 0; }
+    body.hud-min #hud-detail { display: none; }
+    body.hud-min #hud-toggle .caret { transform: rotate(-90deg); display: inline-block; }
     #spark { display: block; width: 190px; height: 34px; margin: 10px 0 8px; image-rendering: pixelated; }
     #hud dl { display: grid; grid-template-columns: auto 1fr; gap: 2px 10px; }
     #hud dt { color: var(--faint); font-size: 10px; letter-spacing: .1em; text-transform: uppercase; }
@@ -71,33 +82,66 @@
     /* ---------- controls ---------- */
     #panel {
       top: 16px; right: 16px; bottom: 16px;
-      width: 268px;
+      width: min(420px, calc(100vw - 32px));
       background: rgba(17,17,17,.82);
       border: 1px solid var(--border);
       backdrop-filter: blur(6px);
       display: flex; flex-direction: column;
     }
+    /* Collapsed, the panel is nothing but its own title bar and build stamp. */
+    body.panel-min #panel { bottom: auto; }
+    body.panel-min #panel-body, body.panel-min #panel .actions { display: none; }
+    body.panel-min #panel-toggle .caret { transform: rotate(-90deg); }
+
     #panel header {
-      padding: 12px 14px; border-bottom: 1px solid var(--border);
-      display: flex; align-items: baseline; justify-content: space-between;
+      padding: 10px 12px 10px 14px; border-bottom: 1px solid var(--border);
+      display: flex; align-items: baseline; gap: 10px;
     }
     #panel header b { font-size: 13px; letter-spacing: .04em; }
-    #panel header span { font-size: 10px; color: var(--faint); letter-spacing: .18em; text-transform: uppercase; }
-    #panel .scroll { overflow-y: auto; padding: 4px 14px 14px; flex: 1; scrollbar-width: thin; }
-    fieldset { border: 0; margin-top: 14px; }
-    legend {
-      font-size: 10px; letter-spacing: .28em; text-transform: uppercase;
-      color: var(--accent); padding-bottom: 8px; width: 100%;
-      border-bottom: 1px solid var(--border); margin-bottom: 10px;
+    #panel header #build-tag {
+      font-size: 10px; color: var(--faint); letter-spacing: .18em;
+      text-transform: uppercase; margin-right: auto;
     }
-    .row { margin-bottom: 11px; }
-    .row .lbl { display: flex; justify-content: space-between; align-items: baseline; margin-bottom: 5px; }
-    .row .lbl span:first-child { color: var(--mid); }
-    .row .lbl output { color: var(--white); font-variant-numeric: tabular-nums; }
+    #panel-toggle {
+      width: auto; background: none; border: 0; padding: 0 2px;
+      font-family: var(--mono); font-size: 10px; color: var(--faint);
+      letter-spacing: .18em; text-transform: uppercase; cursor: pointer;
+      display: flex; align-items: baseline; gap: 6px;
+    }
+    #panel-toggle:hover { color: var(--accent); }
+    #panel-toggle .caret { font-size: 9px; display: inline-block; }
+
+    #panel-body { overflow-y: auto; padding: 2px 14px 12px; flex: 1; scrollbar-width: thin; }
+
+    /* Sections fold, which is what keeps the whole panel inside the fold
+       without a scrollbar on an ordinary laptop screen. */
+    .sec { border-bottom: 1px solid var(--border); }
+    .sec:last-of-type { border-bottom: 0; }
+    .sec > summary {
+      list-style: none; cursor: pointer;
+      font-size: 10px; letter-spacing: .28em; text-transform: uppercase;
+      color: var(--accent); padding: 11px 0 9px;
+      display: flex; align-items: center; justify-content: space-between;
+    }
+    .sec > summary::-webkit-details-marker { display: none; }
+    .sec > summary:hover { color: var(--white); }
+    .sec > summary .caret { font-size: 9px; letter-spacing: 0; color: var(--faint); }
+    .sec[open] > summary .caret { transform: rotate(0deg); }
+    .sec:not([open]) > summary .caret { transform: rotate(-90deg); }
+    .sec > summary .caret { display: inline-block; }
+    .sec .body { padding-bottom: 10px; }
+
+    /* Two columns: the panel is wide, and a slider does not need 400px. */
+    .g2 { display: grid; grid-template-columns: 1fr 1fr; gap: 0 12px; align-items: start; }
+    .row { margin-bottom: 9px; }
+    .row .lbl { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; margin-bottom: 4px; }
+    .row .lbl span:first-child { color: var(--mid); white-space: nowrap; }
+    .row .lbl output { color: var(--white); font-variant-numeric: tabular-nums; white-space: nowrap; }
     .row.disabled { opacity: .34; pointer-events: none; }
     input[type=range] {
       -webkit-appearance: none; appearance: none;
       width: 100%; height: 3px; background: var(--border); outline: none; border-radius: 0;
+      margin: 6px 0;
     }
     input[type=range]::-webkit-slider-thumb {
       -webkit-appearance: none; appearance: none;
@@ -107,28 +151,46 @@
       width: 11px; height: 15px; background: var(--white); cursor: ew-resize;
       border: 0; border-radius: 1px;
     }
-    select, button {
-      width: 100%; font-family: var(--mono); font-size: 12px;
+    #panel-body select, #panel-body button, .actions button, .btn-check span {
+      display: block; width: 100%; font-family: var(--mono); font-size: 12px;
       background: #0C0C0C; color: var(--white);
       border: 1px solid var(--border); padding: 7px 8px; cursor: pointer;
+      text-align: left;
     }
+    .actions button, .btn-check span { text-align: center; }
     input[type=text] {
       width: 100%; font-family: var(--mono); font-size: 13px;
       background: #0C0C0C; color: var(--white);
       border: 1px solid var(--border); padding: 7px 8px; cursor: text;
     }
     input[type=text]::placeholder { color: var(--faint); }
-    .note { color: var(--faint); font-size: 10px; line-height: 1.6; margin-top: -3px; }
+    .note { color: var(--faint); font-size: 10px; line-height: 1.6; margin: 4px 0 8px; }
     .note.is-bad { color: var(--warn); }
-    select:focus-visible, button:focus-visible, input:focus-visible { outline: 1px solid var(--accent); outline-offset: 1px; }
-    button:hover { border-color: var(--accent); color: var(--accent); }
-    .btn-row { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
-    .check { display: flex; align-items: center; gap: 8px; color: var(--mid); cursor: pointer; margin-bottom: 9px; }
+    select:focus-visible, button:focus-visible, input:focus-visible,
+    .btn-check input:focus-visible + span, summary:focus-visible {
+      outline: 1px solid var(--accent); outline-offset: 1px;
+    }
+    #panel-body button:hover, .actions button:hover, .btn-check:hover span { border-color: var(--accent); color: var(--accent); }
+    .check { display: flex; align-items: center; gap: 8px; color: var(--mid); cursor: pointer; margin-bottom: 9px; min-height: 28px; }
     .check input { accent-color: var(--accent); width: 13px; height: 13px; cursor: pointer; }
 
+    /* Always-visible action bar: shake, refill, pause and reset never hide
+       behind a scroll position or a folded section. */
+    .actions {
+      border-top: 1px solid var(--border); padding: 10px 14px;
+      display: grid; grid-template-columns: repeat(4, 1fr); gap: 6px;
+    }
+    .btn-check { position: relative; display: block; }
+    .btn-check input { position: absolute; opacity: 0; width: 1px; height: 1px; }
+    .btn-check input:checked + span { border-color: var(--accent); color: var(--accent); background: #101A26; }
+
     /* ---------- footer / help ---------- */
+    /* Sits under everything and swallows no clicks: it used to shrink-wrap to
+       the width of its longest line, which put an invisible box over the
+       bottom of the control panel. */
     #keys {
-      left: 16px; bottom: 16px;
+      left: 16px; bottom: 16px; z-index: 1; pointer-events: none;
+      max-width: calc(100vw - 480px);
       color: var(--faint); font-size: 10px; letter-spacing: .06em; line-height: 1.9;
     }
     #keys div { background: rgba(10,10,10,.55); display: inline-block; padding: 1px 6px; }
@@ -136,7 +198,7 @@
       color: var(--mid); border: 1px solid var(--border); background: var(--panel);
       padding: 1px 5px; margin-right: 4px;
     }
-    #keys a { color: var(--faint); text-decoration: none; border-bottom: 1px solid var(--border); }
+    #keys a { color: var(--faint); text-decoration: none; border-bottom: 1px solid var(--border); pointer-events: auto; }
     #keys a:hover { color: var(--accent); }
 
     #boot {
@@ -149,11 +211,18 @@
     #boot p { color: var(--mid); max-width: 460px; line-height: 1.7; }
 
     @media (max-width: 860px) {
-      #panel { top: auto; right: 8px; left: 8px; bottom: 8px; width: auto; max-height: 46vh; }
-      #hud { top: 8px; left: 8px; padding: 9px 11px; min-width: 0; }
+      #panel { top: auto; right: 8px; left: 8px; bottom: 8px; width: auto; max-height: 62vh; }
+      #hud { top: 8px; left: 8px; padding: 8px 11px 10px; min-width: 0; }
       #fps { font-size: 22px; }
       #spark { width: 150px; }
       #keys { display: none; }
+      .g2 { gap: 0 10px; }
+      /* The desktop fold clears `bottom` so the panel can shrink to its header
+         between top:16 and bottom:16. Here the panel is a bottom sheet with
+         `top: auto`, so clearing `bottom` too would leave it with neither
+         offset — it would fall back to its static position at the top of the
+         screen, on top of the HUD, instead of collapsing in place. */
+      body.panel-min #panel { bottom: 8px; }
     }
   </style>
 </head>
@@ -161,170 +230,207 @@
   <canvas id="gl"></canvas>
 
   <div id="hud" class="ui">
-    <div class="fps-row"><b id="fps">—</b><span class="fps-unit">fps</span></div>
-    <canvas id="spark" width="190" height="34"></canvas>
-    <dl>
-      <dt>frame</dt><dd id="m-frame">—</dd>
-      <dt>1% low</dt><dd id="m-low">—</dd>
-      <dt>gpu</dt><dd id="m-gpu">—</dd>
-      <dt>sim</dt><dd id="m-sim">—</dd>
-      <dt>buffer</dt><dd id="m-res">—</dd>
-      <dt>shards</dt><dd id="m-shards">—</dd>
-      <dt>tube</dt><dd id="m-tube">—</dd>
-      <dt>cell</dt><dd id="m-cell">—</dd>
-    </dl>
+    <button id="hud-toggle" type="button" aria-expanded="true" aria-controls="hud-detail"
+            title="Show or hide the frame-time detail">
+      <b id="fps">—</b><span class="fps-unit">fps</span><span class="caret">▾</span>
+    </button>
+    <div id="hud-detail">
+      <canvas id="spark" width="190" height="34"></canvas>
+      <dl>
+        <dt>frame</dt><dd id="m-frame">—</dd>
+        <dt>1% low</dt><dd id="m-low">—</dd>
+        <dt>gpu</dt><dd id="m-gpu">—</dd>
+        <dt>sim</dt><dd id="m-sim">—</dd>
+        <dt>buffer</dt><dd id="m-res">—</dd>
+        <dt>shards</dt><dd id="m-shards">—</dd>
+        <dt>tube</dt><dd id="m-tube">—</dd>
+        <dt>cell</dt><dd id="m-cell">—</dd>
+      </dl>
+    </div>
   </div>
 
   <section id="panel" class="ui">
-    <header><b>Kaleidoscope</b><span id="build-tag">dev</span></header>
-    <div class="scroll">
+    <header>
+      <b>Kaleidoscope</b>
+      <span id="build-tag">dev</span>
+      <button id="panel-toggle" type="button" aria-expanded="true" aria-controls="panel-body"
+              title="Fold the controls into the title bar (c)">
+        <span class="txt">hide</span><span class="caret">▾</span>
+      </button>
+    </header>
 
-      <fieldset>
-        <legend>Mirror tube</legend>
-        <div class="row">
-          <select id="c-tube" aria-label="Mirror tube">
-            <option value="rosette">2-mirror V — rosette</option>
-            <option value="333">3-mirror equilateral — 3·3·3</option>
-            <option value="236">3-mirror 30-60-90 — 2·3·6</option>
-            <option value="244">3-mirror 45-45-90 — 2·4·4</option>
-          </select>
-        </div>
-        <div class="row" id="row-seg">
-          <div class="lbl"><span>Sectors</span><output id="o-seg"></output></div>
-          <input type="range" id="c-seg" min="3" max="24" step="1" />
-        </div>
-        <div class="row">
-          <div class="lbl"><span>Field of view</span><output id="o-zoom"></output></div>
-          <input type="range" id="c-zoom" min="0.15" max="3" step="0.01" />
-        </div>
-        <div class="row">
-          <div class="lbl"><span>Roll rate</span><output id="o-roll"></output></div>
-          <input type="range" id="c-roll" min="-1.5" max="1.5" step="0.01" />
-        </div>
-        <div class="row">
-          <div class="lbl"><span>Reflectance</span><output id="o-refl"></output></div>
-          <input type="range" id="c-refl" min="0.7" max="1" step="0.005" />
-        </div>
-        <div class="row">
-          <div class="lbl"><span>Dispersion</span><output id="o-aberr"></output></div>
-          <input type="range" id="c-aberr" min="0" max="0.03" step="0.0005" />
-        </div>
-        <div class="row">
-          <div class="lbl"><span>Seam glow</span><output id="o-seam"></output></div>
-          <input type="range" id="c-seam" min="0" max="1" step="0.01" />
-        </div>
-        <label class="check"><input type="checkbox" id="c-eyepiece" /> Eyepiece aperture</label>
-        <div class="row">
-          <div class="lbl"><span>Vision</span></div>
-          <select id="c-vision" aria-label="Colour vision simulation">
-            <option value="normal">Trichromatic — as designed</option>
-            <option value="deutan">Deuteranopia — no green cone</option>
-            <option value="protan">Protanopia — no red cone</option>
-            <option value="tritan">Tritanopia — no blue cone</option>
-            <option value="mono">Achromatopsia — luminance only</option>
-          </select>
-        </div>
-      </fieldset>
+    <div id="panel-body">
 
-      <fieldset>
-        <legend>Object cell</legend>
-        <div class="row">
-          <select id="c-shape" aria-label="Shard shape"></select>
+      <details class="sec" id="sec-tube" open>
+        <summary>Mirror tube<span class="caret">▾</span></summary>
+        <div class="body">
+          <div class="row">
+            <select id="c-tube" aria-label="Mirror tube">
+              <option value="rosette">2-mirror V — rosette</option>
+              <option value="333">3-mirror equilateral — 3·3·3</option>
+              <option value="236">3-mirror 30-60-90 — 2·3·6</option>
+              <option value="244">3-mirror 45-45-90 — 2·4·4</option>
+            </select>
+          </div>
+          <div class="g2">
+            <div class="row" id="row-seg">
+              <div class="lbl"><span>Sectors</span><output id="o-seg"></output></div>
+              <input type="range" id="c-seg" min="3" max="24" step="1" />
+            </div>
+            <div class="row">
+              <div class="lbl"><span>Field of view</span><output id="o-zoom"></output></div>
+              <input type="range" id="c-zoom" min="0.15" max="3" step="0.01" />
+            </div>
+            <div class="row">
+              <div class="lbl"><span>Roll rate</span><output id="o-roll"></output></div>
+              <input type="range" id="c-roll" min="-1.5" max="1.5" step="0.01" />
+            </div>
+            <div class="row">
+              <div class="lbl"><span>Reflectance</span><output id="o-refl"></output></div>
+              <input type="range" id="c-refl" min="0.7" max="1" step="0.005" />
+            </div>
+            <div class="row">
+              <div class="lbl"><span>Dispersion</span><output id="o-aberr"></output></div>
+              <input type="range" id="c-aberr" min="0" max="0.03" step="0.0005" />
+            </div>
+            <div class="row">
+              <div class="lbl"><span>Seam glow</span><output id="o-seam"></output></div>
+              <input type="range" id="c-seam" min="0" max="1" step="0.01" />
+            </div>
+          </div>
+          <label class="check"><input type="checkbox" id="c-eyepiece" /> Eyepiece aperture</label>
+          <div class="row">
+            <select id="c-vision" aria-label="Colour vision simulation">
+              <option value="normal">Trichromatic — as designed</option>
+              <option value="deutan">Deuteranopia — no green cone</option>
+              <option value="protan">Protanopia — no red cone</option>
+              <option value="tritan">Tritanopia — no blue cone</option>
+              <option value="mono">Achromatopsia — luminance only</option>
+            </select>
+          </div>
         </div>
-        <div class="row" id="row-glyphs">
-          <input type="text" id="c-glyphs" spellcheck="false" autocomplete="off" maxlength="256"
-                 aria-label="Characters in the cell" placeholder="type letters, numbers, emoji…" />
-          <div style="height:8px"></div>
-          <select id="c-preset" aria-label="Character preset">
-            <option value="">Load a set…</option>
-          </select>
-        </div>
-        <label class="check" id="row-native"><input type="checkbox" id="c-native" /> Keep each glyph's own colour (emoji)</label>
-        <div class="row">
-          <select id="c-palette" aria-label="Palette"></select>
-        </div>
-        <div class="row">
-          <div class="lbl"><span>Shards</span><output id="o-count"></output></div>
-          <input type="range" id="c-count" min="0" max="2400" step="8" />
-        </div>
-        <div class="row">
-          <div class="lbl"><span>Glass density</span><output id="o-alpha"></output></div>
-          <input type="range" id="c-alpha" min="0.08" max="1" step="0.01" />
-        </div>
-        <div class="row">
-          <div class="lbl"><span>Shard size</span><output id="o-size"></output></div>
-          <input type="range" id="c-size" min="0.4" max="3" step="0.01" />
-        </div>
-        <div class="row">
-          <div class="lbl"><span>Gravity</span><output id="o-grav"></output></div>
-          <input type="range" id="c-grav" min="0" max="3" step="0.01" />
-        </div>
-        <div class="row">
-          <div class="lbl"><span>Agitation</span><output id="o-agit"></output></div>
-          <input type="range" id="c-agit" min="0" max="1" step="0.01" />
-        </div>
-        <div class="row">
-          <div class="lbl"><span>Tumble</span><output id="o-tumble"></output></div>
-          <input type="range" id="c-tumble" min="0" max="3" step="0.01" />
-        </div>
-        <div class="btn-row">
-          <button id="b-shake" type="button">Shake</button>
-          <button id="b-refill" type="button">Refill</button>
-        </div>
-      </fieldset>
+      </details>
 
-      <fieldset>
-        <legend>Backdrop</legend>
-        <div class="row">
-          <select id="c-backdrop" aria-label="Backdrop behind the glass">
-            <option value="off">Frosted backlight</option>
-            <option value="camera">Camera</option>
-            <option value="screen">Screen or tab</option>
-            <option value="file">Image or video…</option>
-          </select>
+      <details class="sec" id="sec-cell" open>
+        <summary>Object cell<span class="caret">▾</span></summary>
+        <div class="body">
+          <div class="g2">
+            <div class="row">
+              <select id="c-shape" aria-label="Shard shape"></select>
+            </div>
+            <div class="row">
+              <select id="c-palette" aria-label="Palette"></select>
+            </div>
+          </div>
+          <div class="row" id="row-glyphs">
+            <input type="text" id="c-glyphs" spellcheck="false" autocomplete="off" maxlength="256"
+                   aria-label="Characters in the cell" placeholder="type letters, numbers, emoji…" />
+            <div style="height:8px"></div>
+            <select id="c-preset" aria-label="Character preset">
+              <option value="">Load a set…</option>
+            </select>
+          </div>
+          <label class="check" id="row-native"><input type="checkbox" id="c-native" /> Keep each glyph's own colour (emoji)</label>
+          <div class="g2">
+            <div class="row">
+              <div class="lbl"><span>Shards</span><output id="o-count"></output></div>
+              <input type="range" id="c-count" min="0" max="300" step="1" />
+            </div>
+            <div class="row">
+              <div class="lbl"><span>Glass density</span><output id="o-alpha"></output></div>
+              <input type="range" id="c-alpha" min="0.08" max="1" step="0.01" />
+            </div>
+            <div class="row">
+              <div class="lbl"><span>Shard size</span><output id="o-size"></output></div>
+              <input type="range" id="c-size" min="0.4" max="3" step="0.01" />
+            </div>
+            <div class="row">
+              <div class="lbl"><span>Gravity</span><output id="o-grav"></output></div>
+              <input type="range" id="c-grav" min="0" max="3" step="0.01" />
+            </div>
+            <div class="row">
+              <div class="lbl"><span>Agitation</span><output id="o-agit"></output></div>
+              <input type="range" id="c-agit" min="0" max="1" step="0.01" />
+            </div>
+            <div class="row">
+              <div class="lbl"><span>Tumble</span><output id="o-tumble"></output></div>
+              <input type="range" id="c-tumble" min="0" max="3" step="0.01" />
+            </div>
+          </div>
+          <p class="note" id="fill-note"></p>
         </div>
-        <div class="row">
-          <button id="b-file" type="button">Choose image or video…</button>
-        </div>
-        <p class="note" id="media-note"></p>
-        <div class="row" id="row-mediamix">
-          <div class="lbl"><span>Backdrop mix</span><output id="o-mediamix"></output></div>
-          <input type="range" id="c-mediamix" min="0" max="1" step="0.01" />
-        </div>
-        <div class="row" id="row-mediagain">
-          <div class="lbl"><span>Backdrop gain</span><output id="o-mediagain"></output></div>
-          <input type="range" id="c-mediagain" min="0.2" max="2.5" step="0.01" />
-        </div>
-        <p class="note">Drop a file anywhere on the page. A YouTube embed can't be
-          read by a page — share the tab playing it instead.</p>
-        <input type="file" id="c-file" accept="image/*,video/*" hidden />
-      </fieldset>
+      </details>
 
-      <fieldset>
-        <legend>Performance</legend>
-        <div class="row">
-          <div class="lbl"><span>Render scale</span><output id="o-scale"></output></div>
-          <input type="range" id="c-scale" min="0.4" max="2" step="0.05" />
+      <details class="sec" id="sec-backdrop">
+        <summary>Backdrop<span class="caret">▾</span></summary>
+        <div class="body">
+          <div class="g2">
+            <div class="row">
+              <select id="c-backdrop" aria-label="Backdrop behind the glass">
+                <option value="off">Frosted backlight</option>
+                <option value="camera">Camera</option>
+                <option value="screen">Screen or tab</option>
+                <option value="file">Image or video…</option>
+              </select>
+            </div>
+            <div class="row">
+              <button id="b-file" type="button">Choose a file…</button>
+            </div>
+          </div>
+          <p class="note" id="media-note"></p>
+          <div class="g2">
+            <div class="row" id="row-mediamix">
+              <div class="lbl"><span>Backdrop mix</span><output id="o-mediamix"></output></div>
+              <input type="range" id="c-mediamix" min="0" max="1" step="0.01" />
+            </div>
+            <div class="row" id="row-mediagain">
+              <div class="lbl"><span>Backdrop gain</span><output id="o-mediagain"></output></div>
+              <input type="range" id="c-mediagain" min="0.2" max="2.5" step="0.01" />
+            </div>
+          </div>
+          <p class="note">Drop a file anywhere on the page. A YouTube embed can't be
+            read by a page — share the tab playing it instead.</p>
+          <input type="file" id="c-file" accept="image/*,video/*" hidden />
         </div>
-        <div class="row">
-          <div class="lbl"><span>Cell buffer</span><output id="o-cellres"></output></div>
-          <input type="range" id="c-cellres" min="0" max="4" step="1" />
-        </div>
-        <label class="check"><input type="checkbox" id="c-auto" /> Adaptive scale</label>
-        <div class="row" id="row-target">
-          <div class="lbl"><span>Target fps</span><output id="o-target"></output></div>
-          <input type="range" id="c-target" min="30" max="360" step="10" />
-        </div>
-        <label class="check"><input type="checkbox" id="c-glint" /> Bevel glints</label>
-        <label class="check"><input type="checkbox" id="c-pause" /> Pause simulation</label>
-      </fieldset>
+      </details>
 
+      <details class="sec" id="sec-perf">
+        <summary>Performance<span class="caret">▾</span></summary>
+        <div class="body">
+          <div class="g2">
+            <div class="row">
+              <div class="lbl"><span>Render scale</span><output id="o-scale"></output></div>
+              <input type="range" id="c-scale" min="0.4" max="2" step="0.05" />
+            </div>
+            <div class="row">
+              <div class="lbl"><span>Cell buffer</span><output id="o-cellres"></output></div>
+              <input type="range" id="c-cellres" min="0" max="4" step="1" />
+            </div>
+            <label class="check"><input type="checkbox" id="c-auto" /> Adaptive scale</label>
+            <div class="row" id="row-target">
+              <div class="lbl"><span>Target fps</span><output id="o-target"></output></div>
+              <input type="range" id="c-target" min="30" max="360" step="10" />
+            </div>
+          </div>
+          <label class="check"><input type="checkbox" id="c-glint" /> Bevel glints</label>
+        </div>
+      </details>
+
+    </div>
+
+    <div class="actions">
+      <button id="b-shake" type="button">Shake</button>
+      <button id="b-refill" type="button">Refill</button>
+      <label class="btn-check" title="Pause the simulation (p)">
+        <input type="checkbox" id="c-pause" /><span>Pause</span>
+      </label>
+      <button id="b-reset" type="button" title="Restore every control to its default">Reset</button>
     </div>
   </section>
 
   <div id="keys" class="ui">
     <div><kbd>drag</kbd>roll the tube <kbd>wheel</kbd>field of view <kbd>click</kbd>shake</div>
-    <div><kbd>1-4</kbd>tube <kbd>s</kbd>shape <kbd>space</kbd>shake <kbd>p</kbd>pause <kbd>h</kbd>chrome <kbd>f</kbd>fullscreen <kbd>r</kbd>reset</div>
+    <div><kbd>1-4</kbd>tube <kbd>s</kbd>shape <kbd>space</kbd>shake <kbd>p</kbd>pause <kbd>c</kbd>controls <kbd>h</kbd>chrome <kbd>f</kbd>fullscreen <kbd>r</kbd>refill</div>
     <div><a href="https://lab980.com">lab980.com</a></div>
   </div>
 
