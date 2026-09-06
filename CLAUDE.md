@@ -48,14 +48,16 @@ as a phantom second build.)
 
 ## What the code is
 
-Four files, no bundler, no dependencies. `index.html` is the shell and the
+Six files, no bundler, no dependencies. `index.html` is the shell and the
 controls; the rest are ES modules loaded straight from `js/`.
 
 | file | what it owns |
 |---|---|
-| `js/cell.js` | the object cell — the disc of tumbling glass. Rigid-disc sim, counting-sort broadphase, fixed 180 Hz timestep. Pure CPU, no GL. |
-| `js/shaders.js` | the two GLSL ES 3.00 programs, as strings. |
-| `js/renderer.js` | WebGL2: FBO, instancing, blend state, the mirror-tube geometry, GPU timing. |
+| `js/cell.js` | the object cell — the disc of tumbling glass. Rigid-disc sim, counting-sort broadphase, fixed 180 Hz timestep. Also the palettes and the shape modes. Pure CPU, no GL. |
+| `js/shaders.js` | the three GLSL ES 3.00 programs, as strings. |
+| `js/renderer.js` | WebGL2: FBO, instancing, blend state, the three textures, the mirror-tube geometry, GPU timing. |
+| `js/glyphs.js` | rasterises a character set into the glyph atlas, with canvas2D. No GL — it hands the renderer a canvas. |
+| `js/media.js` | the backdrop sources: camera, screen share, dropped file. Owns the stream and the video element, not the texture. |
 | `js/main.js` | frame loop, controls, input, frame-rate metrics, adaptive scale. |
 
 The render is two passes: the cell is drawn once into an offscreen square
@@ -80,6 +82,34 @@ raising the window size costs one cheap pass instead of two.
   greedy version and it does not reliably converge — it ping-pongs between two
   mirrors and leaves far-out points unfolded, which shows on screen as flat
   unresolved patches in the corners at a wide field of view.
+- **Every shard shape comes out of one 27-vertex fan.** `SHARD_VS` decides per
+  instance where each rim vertex lands: an n-gon, a star (twice the corners,
+  every other one pulled in), a sliver (a quad squashed on one axis), or a
+  glyph quad carrying atlas UVs. Shapes with fewer corners than the fan has
+  vertices emit repeats, i.e. degenerate triangles the rasteriser drops. Adding
+  a shape means a new branch there and a new family number in `packStyle`, not
+  a second draw call.
+- **Glyph mode is exclusive on purpose.** The atlas fetch is behind a *uniform*
+  branch (`uGlyph`), so it costs nothing in the other modes. Mixing glyphs into
+  the confetti mix would make that a per-shard branch on a texture read, which
+  is the one thing in this pass that would actually show up in the frame time.
+- **The backdrop is the backlight, not a layer.** Camera, screen share and
+  uploaded files are swapped into pass one's frosted plate, so the glass
+  multiplies over them and the mirrors fold the result — a picture composited
+  *after* the fold would be a different, and much less interesting, program.
+  A video uploads once per decoded frame (via `requestVideoFrameCallback`), not
+  once per rendered frame, and after the first frame it is a `texSubImage2D`
+  into storage that already exists.
+- **YouTube cannot be read by a page, and this is not a gap to fill.** An embed
+  is a cross-origin iframe: `texImage2D` on one throws, and the player is
+  DRM-fenced besides. The working route is the screen share — start it and pick
+  the tab. Nothing about that will change, so don't take another run at it.
+- **The camera is blocked in production by a header this repo does not own** —
+  the shared lab980 `Permissions-Policy` sets `camera=()`. See `DEPLOY.md`;
+  screen share and file upload are unaffected.
+- **The backdrop is never persisted.** Everything else in the control panel is
+  saved to localStorage; a reload must not reach for the camera on its own, and
+  a dropped file's object URL died with the session.
 - **`index.html` carries the `BUILD` constant** at two-space indentation, which
   is what `kaleidoscope deploy` stamps and `kaleidoscope status` reads back.
   Keep it on its own line in that form or the stamp silently stops working.

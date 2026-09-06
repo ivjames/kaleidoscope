@@ -52,6 +52,31 @@ kaleidoscope status              # HEAD commit, live probe, cert days
 health-check --site kaleidoscope # the droplet-wide auditor also covers it
 ```
 
+## The camera backdrop needs a header change
+
+The Backdrop control can put a camera behind the glass, and on the droplet that
+will not work as things stand. Every lab980 vhost includes
+`snippets/lab980-security-headers.conf`, which `fix-security-headers` in the
+`ivjames/lab980.com` repo writes as:
+
+```
+add_header Permissions-Policy "camera=(), microphone=(), geolocation=()" always;
+```
+
+An empty allowlist switches the camera off for the whole document, so
+`getUserMedia` rejects before any permission prompt appears. The page detects
+this where the browser exposes the policy (Chromium does) and says so rather
+than blaming the user.
+
+Nothing else in the feature is affected: **screen share** is governed by
+`display-capture`, which that header does not name, so it defaults to `self`
+and works; **file upload and drag-drop** touch no policy at all.
+
+Turning the camera on is a platform decision, not a change to make here — it
+means relaxing the shared header for this site, in the lab980 repo, to
+something like `camera=(self)`. Until that happens the control is present and
+fails with an accurate message.
+
 ## Overrides
 
 - `KALEIDOSCOPE_FQDN` — serve under a different name (default `kaleidoscope.lab980.com`)

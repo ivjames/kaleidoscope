@@ -3,6 +3,11 @@
 //   pass 1  object cell -> offscreen square texture (one instanced draw)
 //   pass 2  mirror tube -> default framebuffer (one full-screen triangle)
 //
+// Three textures, on three fixed units, bound once and never rebound:
+//   0  the cell FBO's colour attachment, read by the tube pass
+//   1  the glyph atlas, read by the shard pass when the cell is text or emoji
+//   2  the backdrop (camera, screen share, file), read by the backlight pass
+//
 // Splitting it this way is not just tidy: the cell is drawn once at whatever
 // resolution the glass actually needs (512-1024 is plenty for chips a few
 // pixels across), while the fold runs at full display resolution. Raising the
@@ -103,6 +108,12 @@ export const TUBES = {
   '244':   { label: '3-mirror 45-45-90',    mode: 1, tri: triangleTube(2, 4) },
 };
 
+// Fan size and instance-buffer stride, shared with the shard shaders. Both are
+// baked into SHARD_VS (RIM = 25, aShape = vec4), so they move together.
+const FAN_VERTS = 27;
+const STYLE_FLOATS = 8;
+const STYLE_STRIDE = STYLE_FLOATS * 4;
+
 export class Renderer {
   constructor(canvas, maxShards) {
     const gl = canvas.getContext('webgl2', {
@@ -119,18 +130,28 @@ export class Renderer {
     this.progShard = link(gl, SHARD_VS, SHARD_FS);
     this.progTube = link(gl, FULLSCREEN_VS, TUBE_FS);
 
-    this.uBack = uniforms(gl, this.progBack, ['uRes', 'uWarm', 'uCool']);
-    this.uShard = uniforms(gl, this.progShard, ['uGlint']);
+    this.uBack = uniforms(gl, this.progBack, [
+      'uRes', 'uWarm', 'uCool', 'uMedia', 'uMediaMix', 'uMediaScale', 'uMediaGain',
+    ]);
+    this.uShard = uniforms(gl, this.progShard, ['uGlint', 'uGlyph', 'uNative', 'uAtlas', 'uAtlasDim']);
     this.uTube = uniforms(gl, this.progTube, [
       'uCell', 'uRes', 'uZoom', 'uRoll', 'uMode', 'uSectors',
       'uMirrorO[0]', 'uMirrorN[0]', 'uTriCenter', 'uTriScale',
-      'uReflect', 'uAberration', 'uSeam', 'uAperture', 'uVignette',
+      'uReflect', 'uAberration', 'uSeam', 'uAperture', 'uVignette', 'uVision',
     ]);
 
-    // Static fan: centre plus 13 rim vertices. The vertex shader snaps the rim
-    // to an n-gon, so one buffer covers every shard shape.
-    const corners = new Float32Array(14);
-    for (let i = 0; i < 14; i++) corners[i] = i;
+    // Sampler bindings are program state, not draw state: set once at link time
+    // and the frame loop never touches a texture unit again.
+    gl.useProgram(this.progBack);  gl.uniform1i(this.uBack.uMedia, 2);
+    gl.useProgram(this.progShard); gl.uniform1i(this.uShard.uAtlas, 1);
+    gl.useProgram(this.progTube);  gl.uniform1i(this.uTube.uCell, 0);
+
+    // Static fan: centre plus 26 rim vertices. The vertex shader decides where
+    // each one lands — n-gon, star, sliver or glyph quad — so one buffer covers
+    // every shape in the cell and shapes with fewer corners simply emit
+    // repeated vertices the rasteriser throws away.
+    const corners = new Float32Array(FAN_VERTS);
+    for (let i = 0; i < FAN_VERTS; i++) corners[i] = i;
     this.vao = gl.createVertexArray();
     gl.bindVertexArray(this.vao);
     this.bufCorner = gl.createBuffer();
@@ -148,12 +169,12 @@ export class Renderer {
 
     this.bufStyle = gl.createBuffer();
     gl.bindBuffer(gl.ARRAY_BUFFER, this.bufStyle);
-    gl.bufferData(gl.ARRAY_BUFFER, maxShards * 6 * 4, gl.DYNAMIC_DRAW);
+    gl.bufferData(gl.ARRAY_BUFFER, maxShards * STYLE_STRIDE, gl.DYNAMIC_DRAW);
     gl.enableVertexAttribArray(2);
-    gl.vertexAttribPointer(2, 4, gl.FLOAT, false, 24, 0);    // rgb + alpha
+    gl.vertexAttribPointer(2, 4, gl.FLOAT, false, STYLE_STRIDE, 0);    // rgb + alpha
     gl.vertexAttribDivisor(2, 1);
     gl.enableVertexAttribArray(3);
-    gl.vertexAttribPointer(3, 2, gl.FLOAT, false, 24, 16);   // sides + phase
+    gl.vertexAttribPointer(3, 4, gl.FLOAT, false, STYLE_STRIDE, 16);   // sides, phase, family, aux
     gl.vertexAttribDivisor(3, 1);
     gl.bindVertexArray(null);
 
@@ -161,6 +182,33 @@ export class Renderer {
     this.fbo = gl.createFramebuffer();
     this.cellTex = gl.createTexture();
     this.setCellResolution(768);
+
+    // Unit 1: the glyph atlas. Starts as a single opaque white texel, which is
+    // the identity for the tint — so a glyph draw before the first atlas build
+    // shows plain squares rather than sampling undefined memory.
+    this.atlasDim = [1, 1];
+    this.atlasTex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.atlasTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+      new Uint8Array([255, 255, 255, 255]));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+
+    // Unit 2: the backdrop. Same idea — white until something is loaded.
+    this.mediaW = 0; this.mediaH = 0;
+    this.mediaTex = gl.createTexture();
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.mediaTex);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE,
+      new Uint8Array([255, 255, 255, 255]));
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.activeTexture(gl.TEXTURE0);
 
     // Optional GPU-side timing. One query in flight: enough for a HUD reading,
     // and it never stalls the pipeline waiting for a result.
@@ -177,6 +225,7 @@ export class Renderer {
     if (res === this.cellRes) return;
     const gl = this.gl;
     this.cellRes = res;
+    gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, this.cellTex);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, res, res, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
     gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
@@ -188,6 +237,53 @@ export class Renderer {
     const status = gl.checkFramebufferStatus(gl.FRAMEBUFFER);
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     if (status !== gl.FRAMEBUFFER_COMPLETE) throw new Error('cell framebuffer incomplete: 0x' + status.toString(16));
+  }
+
+  // Replace the glyph atlas. Called only when the character set changes — the
+  // sheet is a canvas the caller has already rasterised, and mipmaps are worth
+  // the one-off cost because a cell full of small glyphs shimmers badly without
+  // them.
+  setAtlas(canvas, cols, rows) {
+    const gl = this.gl;
+    this.atlasDim[0] = cols;
+    this.atlasDim[1] = rows;
+    gl.activeTexture(gl.TEXTURE1);
+    gl.bindTexture(gl.TEXTURE_2D, this.atlasTex);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, canvas);
+    gl.generateMipmap(gl.TEXTURE_2D);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    gl.activeTexture(gl.TEXTURE0);
+  }
+
+  // Push one frame of the backdrop. The caller decides when: for a video that
+  // is once per decoded frame, not once per rendered frame, which is the whole
+  // difference between a 30 Hz camera costing 30 uploads a second and 240.
+  uploadMedia(src) {
+    const gl = this.gl;
+    const w = src.videoWidth || src.naturalWidth || src.width;
+    const h = src.videoHeight || src.naturalHeight || src.height;
+    if (!w || !h) return false;
+    gl.activeTexture(gl.TEXTURE2);
+    gl.bindTexture(gl.TEXTURE_2D, this.mediaTex);
+    gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, false);
+    try {
+      // Reallocating the texture storage on every frame of a 720p camera is
+      // pure waste — the size only changes when the source does, so after the
+      // first frame this is a sub-image write into storage that already exists.
+      if (w === this.mediaW && h === this.mediaH) {
+        gl.texSubImage2D(gl.TEXTURE_2D, 0, 0, 0, gl.RGBA, gl.UNSIGNED_BYTE, src);
+      } else {
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA8, gl.RGBA, gl.UNSIGNED_BYTE, src);
+        this.mediaW = w; this.mediaH = h;
+      }
+    } catch (_) {
+      this.mediaW = 0; this.mediaH = 0;
+      gl.activeTexture(gl.TEXTURE0);
+      return false;   // a tainted or not-yet-decodable source
+    }
+    gl.activeTexture(gl.TEXTURE0);
+    return true;
   }
 
   resize(cssW, cssH, scale) {
@@ -248,6 +344,9 @@ export class Renderer {
     gl.uniform2f(this.uBack.uRes, this.cellRes, this.cellRes);
     gl.uniform3fv(this.uBack.uWarm, opts.warm);
     gl.uniform3fv(this.uBack.uCool, opts.cool);
+    gl.uniform1f(this.uBack.uMediaMix, opts.mediaMix);
+    gl.uniform2fv(this.uBack.uMediaScale, opts.mediaScale);
+    gl.uniform1f(this.uBack.uMediaGain, opts.mediaGain);
     gl.drawArrays(gl.TRIANGLES, 0, 3);
 
     gl.bindVertexArray(this.vao);
@@ -258,13 +357,18 @@ export class Renderer {
     // identity, so there is nothing to mask out.
     gl.enable(gl.BLEND);
     gl.blendFuncSeparate(gl.ZERO, gl.SRC_COLOR, gl.ZERO, gl.ONE);
+    gl.uniform1f(this.uShard.uGlyph, opts.glyph ? 1 : 0);
+    gl.uniform1f(this.uShard.uNative, opts.native ? 1 : 0);
+    gl.uniform2f(this.uShard.uAtlasDim, this.atlasDim[0], this.atlasDim[1]);
     gl.uniform1f(this.uShard.uGlint, 0);
-    gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 14, cell.count);
+    gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, FAN_VERTS, cell.count);
 
-    if (opts.glints) {
+    // No glint pass in glyph mode: the bevel is a property of a cut edge, and a
+    // letter's edge is the atlas's alpha, not the quad it is drawn on.
+    if (opts.glints && !opts.glyph) {
       gl.blendFunc(gl.ONE, gl.ONE);
       gl.uniform1f(this.uShard.uGlint, 1);
-      gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, 14, cell.count);
+      gl.drawArraysInstanced(gl.TRIANGLE_FAN, 0, FAN_VERTS, cell.count);
     }
     gl.bindVertexArray(null);
     gl.disable(gl.BLEND);
@@ -275,10 +379,6 @@ export class Renderer {
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     gl.viewport(0, 0, this.canvas.width, this.canvas.height);
     gl.useProgram(this.progTube);
-
-    gl.activeTexture(gl.TEXTURE0);
-    gl.bindTexture(gl.TEXTURE_2D, this.cellTex);
-    gl.uniform1i(this.uTube.uCell, 0);
 
     const u = this.uTube;
     gl.uniform2f(u.uRes, this.canvas.width, this.canvas.height);
@@ -295,6 +395,7 @@ export class Renderer {
     gl.uniform1f(u.uSeam, opts.seam);
     gl.uniform1f(u.uAperture, opts.aperture);
     gl.uniform1f(u.uVignette, opts.vignette);
+    gl.uniformMatrix3fv(u.uVision, false, opts.vision);
 
     gl.drawArrays(gl.TRIANGLES, 0, 3);
   }
