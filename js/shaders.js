@@ -97,13 +97,17 @@ void main() {
       local = vec2(cos(a), sin(a)) * rr;
     } else {
       // Four corners at 45 degrees: the square inscribed in the shard's disc,
-      // so a glyph is exactly as big as the collision radius says it is.
+      // scaled by the half-extents in aShape.xy. A sliver squashes that square
+      // on its local y; a glyph shrinks it to its own ink, and takes the atlas
+      // uv in with it so the character is drawn at the same size it always was
+      // while the quad — and so the contact rectangle — stops being the whole
+      // cell of empty space around it.
       float corner = floor(k * 4.0 / RIM);
       float a = corner * (TAU * 0.25) + 0.78539816;
       vec2 c = vec2(cos(a), sin(a));
-      uv = c * 0.70710678 + 0.5;
-      if (fam < 2.5) c.y *= aShape.w;     // sliver: squash to a needle
-      local = c;
+      vec2 f = aShape.xy;
+      local = c * f;
+      uv = vec2(0.5) + sign(c) * 0.5 * f;
     }
     vEdge = 1.0;
   }
