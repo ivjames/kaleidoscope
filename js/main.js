@@ -6,12 +6,15 @@
 // metrics live in ring buffers, the sim writes into pre-sized arrays, and the
 // HUD is text-poked at 10 Hz rather than rebuilt per frame.
 
-import { ObjectCell, PALETTES, SHAPES } from './cell.js';
+import { ObjectCell, PALETTES, SHAPES, maxCountForSize } from './cell.js';
 import { Renderer, TUBES } from './renderer.js';
 import { MediaInput } from './media.js';
 import { GLYPH_PRESETS, MAX_GLYPHS, buildAtlas, splitGraphemes } from './glyphs.js';
 
-const MAX_SHARDS = 2400;
+// The absolute ceiling on the Shards slider, alongside the area-based cap in
+// maxCountForSize. It used to be 2400, which no size of shard could actually be
+// resolved at: the pile simply interpenetrated and twitched.
+const MAX_SHARDS = 300;
 const CELL_SIZES = [256, 384, 512, 768, 1024];
 const STORE_KEY = 'lab980.kaleidoscope.v1';
 
@@ -63,7 +66,19 @@ const S = {
   target: 120,
   glints: true,
   paused: false,
+  // Chrome state. The panel and the HUD both fold, and which sections are open
+  // is part of how the page looks to the person who set it up — restoring the
+  // sliders but reopening every drawer would undo half of what they arranged.
+  hudOpen: true,
+  panelOpen: true,
+  secOpen: { 'sec-tube': true, 'sec-cell': true, 'sec-backdrop': false, 'sec-perf': false },
 };
+
+// The literal defaults, captured before load() overwrites S from localStorage —
+// which is the only moment they exist anywhere. Reset copies out of this, so it
+// has to be a deep copy: a shallow one would share `secOpen` with S and every
+// section the user folded would quietly become a "default".
+const DEFAULTS = JSON.parse(JSON.stringify(S));
 
 export function start(build) {
   const canvas = $('gl');
@@ -106,12 +121,20 @@ export function start(build) {
     o.value = sh.id; o.textContent = sh.name;
     shapeSel.appendChild(o);
   });
+  // Declared up here because bind()'s formatter for the Shards slider reads its
+  // `max` the moment the control is bound, which is before the block below.
+  const countEl = $('c-count');
   const presetSel = $('c-preset');
   GLYPH_PRESETS.forEach((p, i) => {
     const o = document.createElement('option');
     o.value = String(i); o.textContent = p.name;
     presetSel.appendChild(o);
   });
+
+  // Every bound control, in bind order, so Reset can walk the list instead of
+  // repeating it — a second copy of this list is a second place to forget a
+  // control, and the one you forget is the one that stays wrong after a reset.
+  const bound = [];
 
   const bind = (id, key, fmt, onChange) => {
     const el = $(id);
@@ -126,13 +149,24 @@ export function start(build) {
     };
     if (el.type === 'checkbox') el.checked = S[key];
     else el.value = S[key];
+    // Both events, not just 'input'. Safari has a long history of not firing
+    // 'input' on a <select>, which would leave every picker on this panel — the
+    // tube, the palette, the shape — doing nothing at all on an iPad. The push
+    // is idempotent, so a browser that fires both just writes the same value
+    // twice.
     el.addEventListener('input', push);
+    el.addEventListener('change', push);
     push();
+    bound.push({ el, key, push });
     return el;
   };
 
   const n2 = (v) => v.toFixed(2);
   const pct = (v) => Math.round(v * 100) + '%';
+
+  // Before the binds: the Shards slider's own formatter reads its ceiling, so
+  // the ceiling has to be on the element before anything is written into it.
+  refreshCountCap();
 
   bind('c-tube', 'tube', null, syncRows);
   bind('c-seg', 'sectors', (v) => String(v), syncRows);
@@ -147,9 +181,9 @@ export function start(build) {
   bind('c-shape', 'shape', null, (v) => { cell.setShape(v); syncRows(); });
   bind('c-glyphs', 'glyphs', null, scheduleAtlas);
   bind('c-native', 'native');
-  bind('c-count', 'count', (v) => String(v), (v) => setCount(v));
+  bind('c-count', 'count', countLabel, (v) => setCount(v));
   bind('c-alpha', 'alpha', n2, (v) => cell.setDensity(v));
-  bind('c-size', 'size', n2, (v) => cell.setSize(v));
+  bind('c-size', 'size', n2, (v) => { cell.setSize(v); refreshCountCap(); });
   bind('c-grav', 'gravity', n2);
   bind('c-agit', 'agitation', pct);
   bind('c-tumble', 'tumble', (v) => n2(v) + '×', (v) => cell.setTumble(v));
@@ -168,6 +202,42 @@ export function start(build) {
     else cell.setCount(n);
   }
 
+  // --- how much glass fits ---------------------------------------------------
+  //
+  // The chamber is a disc of fixed size, so the number of shards it can hold is
+  // a function of how big they are. The slider used to run to 2400 at any size,
+  // which at the default size is about sixteen times what fits: the pieces then
+  // spawn inside one another, the contact solver has no solution to find, and
+  // the pile twitches instead of settling. The ceiling is cheap to compute, so
+  // the slider carries it rather than the user discovering it as a bug — and
+  // the output reads "130 / 141" so the limit is visible rather than a slider
+  // that mysteriously stops moving.
+  function countLabel(v) { return `${v | 0} / ${countEl.max}`; }
+
+  function refreshCountCap() {
+    const cap = maxCountForSize(S.size, MAX_SHARDS);
+    countEl.max = String(cap);
+    if (S.count > cap) {
+      // Setting max already clamps the control's value; do it explicitly so the
+      // sim and the store follow rather than drifting from what is on screen.
+      S.count = cap;
+      countEl.value = String(cap);
+      setCount(cap);
+      save();
+    }
+    $('o-count').textContent = countLabel(S.count);
+    // Two different reasons for a ceiling, and the note says which one is
+    // biting: at a large shard size the chamber is simply full, while at a
+    // small one it is the pile getting too deep for the contact solver to
+    // unpick — telling someone "it is full" in front of an obviously sparse
+    // cell just reads as a bug.
+    $('fill-note').textContent = cap < MAX_SHARDS
+      ? `About ${cap} pieces of this size fill the chamber, so the Shards ceiling `
+        + 'comes down as Shard size goes up.'
+      : `${cap} is as many as the pile can be settled at, whatever their size — `
+        + 'past that the pieces stop resolving and the cell twitches.';
+  }
+
   function syncRows() {
     const glyphMode = S.shape === 'glyphs';
     $('row-seg').classList.toggle('disabled', S.tube !== 'rosette');
@@ -180,6 +250,68 @@ export function start(build) {
       ? `V ×${S.sectors}` : TUBES[S.tube].tri.angles.join('·');
     $('m-cell').textContent = cellLabel();
   }
+
+  // ---- folding chrome -----------------------------------------------------
+  //
+  // The panel folds into its own title bar, the HUD folds to the bare frame
+  // count, and each section folds on its own. All three are remembered: on a
+  // laptop the panel is the composition tool and wants to be open, on a phone
+  // it is in the way, and reopening every drawer on reload would undo whatever
+  // the person arranged the last time they were here.
+  const hudToggle = $('hud-toggle');
+  const panelToggle = $('panel-toggle');
+  const panelToggleTxt = panelToggle.querySelector('.txt');
+  const secs = Object.keys(DEFAULTS.secOpen).map($);
+
+  function applyFolds() {
+    document.body.classList.toggle('hud-min', !S.hudOpen);
+    hudToggle.setAttribute('aria-expanded', String(S.hudOpen));
+    document.body.classList.toggle('panel-min', !S.panelOpen);
+    panelToggle.setAttribute('aria-expanded', String(S.panelOpen));
+    panelToggleTxt.textContent = S.panelOpen ? 'hide' : 'show';
+    for (const sec of secs) sec.open = S.secOpen[sec.id];
+  }
+
+  hudToggle.addEventListener('click', () => { S.hudOpen = !S.hudOpen; applyFolds(); save(); });
+  function togglePanel() { S.panelOpen = !S.panelOpen; applyFolds(); save(); }
+  panelToggle.addEventListener('click', togglePanel);
+
+  for (const sec of secs) {
+    // <details> fires `toggle` for our own writes as well as the user's, so
+    // compare before storing — otherwise applyFolds() would schedule a save on
+    // every start-up and every reset for a state that did not change.
+    sec.addEventListener('toggle', () => {
+      if (S.secOpen[sec.id] === sec.open) return;
+      S.secOpen[sec.id] = sec.open;
+      save();
+    });
+  }
+
+  // ---- reset ---------------------------------------------------------------
+  //
+  // Everything back to the literal defaults captured at module load, including
+  // the fold state and the stored copy. Two things it deliberately leaves
+  // alone: the backdrop, which is never persisted and which a reset must not
+  // use as an excuse to reach for the camera, and view.roll, because throwing
+  // the tube back to zero looks like a glitch rather than a reset.
+  $('b-reset').addEventListener('click', () => {
+    for (const k of Object.keys(DEFAULTS)) {
+      S[k] = k === 'secOpen' ? { ...DEFAULTS.secOpen } : DEFAULTS[k];
+    }
+    S.backdrop = media.kind;
+    // The ceiling first: writing a count past the slider's max would be clamped
+    // by the control and the two would disagree from then on.
+    refreshCountCap();
+    for (const b of bound) {
+      if (b.el.type === 'checkbox') b.el.checked = S[b.key];
+      else b.el.value = S[b.key];
+      b.push();
+    }
+    applyFolds();
+    syncRows();
+    try { localStorage.removeItem(STORE_KEY); } catch (_) { /* private mode */ }
+    save();
+  });
 
   // ---- glyph atlas --------------------------------------------------------
   // Rebuilt on a short debounce: the text box fires on every keystroke, and
@@ -199,7 +331,9 @@ export function start(build) {
   }
   rebuildAtlas();
 
-  presetSel.addEventListener('input', () => {
+  // 'change' as well as 'input', for the same reason as bind(): a Safari that
+  // never fires 'input' on a <select> would make this picker inert.
+  const loadPreset = () => {
     const p = GLYPH_PRESETS[parseInt(presetSel.value, 10)];
     if (!p) return;
     const box = $('c-glyphs');
@@ -210,7 +344,9 @@ export function start(build) {
       shapeSel.value = 'glyphs';
       shapeSel.dispatchEvent(new Event('input'));
     }
-  });
+  };
+  presetSel.addEventListener('input', loadPreset);
+  presetSel.addEventListener('change', loadPreset);
 
   $('b-shake').addEventListener('click', () => cell.shake(2.2));
   $('b-refill').addEventListener('click', () => cell.refill());
@@ -219,9 +355,24 @@ export function start(build) {
   const backSel = $('c-backdrop');
   const fileInput = $('c-file');
   backSel.value = 'off';
+  // The last value this picker actually acted on. It exists because the picker
+  // now listens to both 'input' and 'change' (see bind()), and unlike a slider
+  // push, `media.use()` is not idempotent — firing it twice for one selection
+  // opens two capture prompts and tears the first stream down under the second.
+  let backdropAct = 'off';
+
+  // iOS and iPadOS have no screen-capture API at all — not in Safari, and not
+  // in the Chrome or Firefox skins either, since they are all the same WebKit
+  // underneath. Say so on the option rather than letting the pick fail with a
+  // one-line error after the fact.
+  if (typeof navigator.mediaDevices?.getDisplayMedia !== 'function') {
+    const opt = backSel.querySelector('option[value="screen"]');
+    if (opt) { opt.disabled = true; opt.textContent += ' — not on iOS/iPadOS'; }
+  }
 
   function onMediaChange(m) {
     backSel.value = m.kind;
+    backdropAct = m.kind;
     S.backdrop = m.kind;
     const note = $('media-note');
     if (m.status) note.textContent = m.status;
@@ -232,11 +383,20 @@ export function start(build) {
     $('m-cell').textContent = cellLabel();
   }
 
-  backSel.addEventListener('input', () => {
+  const pickBackdrop = () => {
     const v = backSel.value;
-    if (v === 'file') { fileInput.click(); backSel.value = media.kind; return; }
+    if (v === backdropAct) return;
+    backdropAct = v;
+    if (v === 'file') {
+      fileInput.click();
+      backSel.value = media.kind;
+      backdropAct = media.kind;
+      return;
+    }
     media.use(v);
-  });
+  };
+  backSel.addEventListener('input', pickBackdrop);
+  backSel.addEventListener('change', pickBackdrop);
   $('b-file').addEventListener('click', () => fileInput.click());
   fileInput.addEventListener('change', () => {
     const f = fileInput.files && fileInput.files[0];
@@ -311,6 +471,7 @@ export function start(build) {
     const k = e.key.toLowerCase();
     if (k === ' ') { e.preventDefault(); cell.shake(2.4); }
     else if (k === 'h') document.body.classList.toggle('chrome-off');
+    else if (k === 'c') togglePanel();
     else if (k === 'p') { $('c-pause').checked = !$('c-pause').checked; $('c-pause').dispatchEvent(new Event('input')); }
     else if (k === 'r') cell.refill();
     else if (k === 's') {
@@ -343,6 +504,22 @@ export function start(build) {
     // The backdrop is never restored. Reopening the page must not reach for the
     // camera on its own, and a dropped file's object URL died with the session.
     S.backdrop = 'off';
+    // secOpen is the one nested value in the store, so it is the one a hand-
+    // edited or half-written entry can turn into a string, an array or null.
+    // Rebuild it key by key from the defaults and take only real booleans:
+    // everything downstream assumes S.secOpen[id] is one.
+    const stored = S.secOpen;
+    const sec = {};
+    for (const id of Object.keys(DEFAULTS.secOpen)) {
+      const v = stored && typeof stored === 'object' ? stored[id] : undefined;
+      sec[id] = typeof v === 'boolean' ? v : DEFAULTS.secOpen[id];
+    }
+    S.secOpen = sec;
+    if (typeof S.hudOpen !== 'boolean') S.hudOpen = DEFAULTS.hudOpen;
+    if (typeof S.panelOpen !== 'boolean') S.panelOpen = DEFAULTS.panelOpen;
+    // A count stored before the ceiling existed — or stored at a smaller shard
+    // size — would otherwise come back as an over-packed, twitching cell.
+    S.count = Math.min(S.count, maxCountForSize(S.size, MAX_SHARDS));
   }
 
   // ---- sparkline ----------------------------------------------------------
@@ -496,6 +673,12 @@ export function start(build) {
     fpsEl.textContent = st.fps ? Math.round(st.fps) : '—';
     fpsEl.className = st.fps >= S.target * 0.92 ? 'is-good'
       : (st.fps >= S.target * 0.6 ? 'is-warn' : 'is-bad');
+    // Folded, everything below is display:none. Redrawing the sparkline and
+    // poking eight <dd>s ten times a second for something nobody can see is
+    // exactly the kind of steady background work that turns a clean 240 into a
+    // sawtooth — the frame count itself keeps updating, which is the point of
+    // folding rather than hiding.
+    if (!S.hudOpen) return;
     $('m-frame').textContent = st.mean.toFixed(2) + ' ms';
     $('m-low').textContent = st.low ? Math.round(st.low) + ' fps' : '—';
     $('m-gpu').textContent = renderer.gpuMs == null ? 'n/a' : renderer.gpuMs.toFixed(2) + ' ms';
@@ -526,6 +709,7 @@ export function start(build) {
     $('boot-msg').textContent = 'WebGL context lost — reload the page.';
   });
 
+  applyFolds();
   syncRows();
   $('m-cell').textContent = cellLabel();
   $('build-tag').textContent = build;

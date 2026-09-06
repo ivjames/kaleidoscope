@@ -3,10 +3,14 @@
 // this stuff moves: rolling the tube slides the pile, and the mirrors turn
 // whatever it settles into a pattern.
 //
-// It is a 2D rigid-disc sim with a counting-sort broadphase, run on a fixed
-// timestep so the picture behaves the same at 60 fps and at 300. All state is
-// in flat typed arrays and the per-frame instance upload writes straight into a
-// pre-allocated Float32Array, so a step allocates nothing.
+// It is a 2D rigid-body sim with a counting-sort broadphase, run on a fixed
+// timestep so the picture behaves the same at 60 fps and at 300. Contacts are
+// taken against each shard's real outline rather than a bounding circle (see
+// _support), which is why a sliver settles lying against its neighbour instead
+// of balancing on a point, and why every bit of rotation in the cell is
+// something a contact did. All state is in flat typed arrays and the per-frame
+// instance upload writes straight into a pre-allocated Float32Array, so a step
+// allocates nothing.
 
 // Two kinds of palette. A SWATCH palette is a jar of glass: a handful of
 // discrete colours, and every shard is one of them, which is what a real object
@@ -52,23 +56,83 @@ export const SHAPES = [
 
 const CELL_R = 1.0;          // the chamber is the unit disc; the FBO is its bbox
 const MAX_RESTITUTION = 0.35;
+const TAU = Math.PI * 2;
 
-// --- how fast the glass turns -----------------------------------------------
+// --- how much glass fits in the chamber -------------------------------------
 //
-// Spin is purely cosmetic here: the shards collide as discs, so a shard's angle
-// feeds nothing back into the physics. That is exactly why it needed reining
-// in — nothing in the sim was pushing back on it.
+// The cell is a disc of fixed size, so there is a real limit on how many shards
+// can be in it before the solver is being asked to unpick a pile that has no
+// solution: at that point contacts never resolve, shards sit inside one another
+// and the whole cell twitches. The slider used to run to 2400 regardless of
+// shard size, which at the default size is roughly sixteen times over.
 //
-// Every graze and every scrape along the chamber wall adds spin, and with the
-// old coupling that pumped a settled cell up to a mean of ~2 rad/s with peaks
-// near 8 (over a turn a second), which is not glass tumbling, it is a blur.
-// Three things hold it down now: a much weaker coupling, a faster decay, and
-// SPIN_INERTIA below.
+// FILL_LIMIT is the fraction of the chamber's area the glass may cover. 0.85 is
+// deliberately past random loose packing (~0.55) and near the dense limit — a
+// jar of glass IS packed. It is measured at the knee: at the default shard size
+// the pile settles to a median overlap of about 2% at this fill and degrades
+// sharply above it.
+export const FILL_LIMIT = 0.85;
+// E[baseR^2] for the spawn distribution below: baseR = 0.018 + t^2.4 * 0.075,
+// t uniform. Integrated once here rather than sampled, so the cap is stable.
+const MEAN_R2 = 0.002088;
+
+// The largest shard count that still fits at a given size, which is what the
+// Shards slider's maximum tracks. Raising Shard size therefore lowers the
+// ceiling instead of overfilling the chamber.
+//
+// The caller's hardMax is the other half of the limit and is not redundant with
+// this one. Area fill only binds at large shard sizes: gravity drags the whole
+// cell into a heap at the bottom whatever the fill fraction is, so a thousand
+// tiny chips make a pile a great many layers deep, and relaxation unpicks one
+// layer per pass. Below a certain size the binding constraint stops being "does
+// it fit" and becomes "can the solver still resolve it", which is a count, not
+// an area.
+export function maxCountForSize(sizeScale, hardMax) {
+  const n = Math.floor(FILL_LIMIT / (MEAN_R2 * sizeScale * sizeScale));
+  return Math.max(8, Math.min(hardMax, n));
+}
+
+// Contacts are solved by relaxation, and one pass is not enough: a pass only
+// propagates a correction one contact deep, so a pile several shards tall needs
+// several. Three settles the default cell to a median overlap of a percent or
+// two. Past that the returns are poor and the cost is linear — on a 300-shard
+// pile, going from three passes to eight roughly halves the deepest overlaps
+// for about two and a half times the time — so a big cell trades the third
+// pass for the frame time instead.
+function solverIters(n) { return n > 180 ? 2 : 3; }
+
+// Agitation is a random walk on velocity, so the per-substep kick has to scale
+// with sqrt(h) for the result to be the same at any step rate. The old code
+// scaled it with h, which made the slider's whole range add up to less than a
+// tenth of gravity — it genuinely did almost nothing.
+const AGITATION = 26.0;
+
+// --- how the glass turns -----------------------------------------------------
+//
+// Every source of spin here is a contact. Nothing hands a shard rotation from
+// outside: a piece of glass is not born spinning, and a shake is a push rather
+// than a twist — shaking a real tube throws the pile about, it does not reach
+// in and turn each chip. The pieces are loose in a chamber, so the only things
+// that can turn one are the neighbour it grazes and the wall it scrapes along.
+// Rotation is therefore emergent, and if the cell looks too still or too busy,
+// the fix belongs in the contact model rather than in a spin term.
+//
+// That is also what makes it self-limiting in a way an injected spin was not:
+// contacts both add spin and take it away, because a piece turning against its
+// neighbours is doing work on them.
+//
+// The two contact sources, both in _pair and _walls:
+//   SPIN_COUPLE   tangential slip — a graze, or a scrape along the chamber wall
+//   SHAPE_TORQUE  a push landing off the shard's own centre line, which is what
+//                 makes a sliver rotate until it lies flat against a neighbour
+//                 instead of balancing on a corner
 const SPIN_COUPLE = 0.13;    // spin picked up per unit of tangential slip
 const SPIN_DECAY = 2.6;      // e-folds per second once nothing is touching it
-const SPIN_KICK = 2.6;       // the impulse a shake delivers
-const SPIN_SPAWN = 1.2;      // the drift a shard is born with
-const MAX_SPIN = 3.5;        // hard ceiling, rad/s, before the size weighting
+const SHAPE_TORQUE = 0.9;    // spin picked up per unit of off-centre push
+// Not a feature — a numerical guard. Two shards resolving a deep overlap can
+// produce one large impulse, and with no ceiling a single bad substep would
+// leave one chip spinning visibly faster than everything around it.
+const MAX_SPIN = 3.5;        // rad/s, before the size weighting
 
 // A big statement piece has far more angular inertia than a chip, so the same
 // graze should barely turn it — and the big pieces are the ones the eye tracks,
@@ -140,6 +204,20 @@ export class ObjectCell {
     this.famR = new Float32Array(m);    // which family, in 'mixed'
     this.auxR = new Float32Array(m);    // star waist / sliver aspect
     this.glyphR = new Float32Array(m);  // which character
+    // …and the geometry those draws resolve to under the current shape mode.
+    // Resolved once per mode change rather than per frame, because the contact
+    // solver reads them at 180 Hz as well as the instance packer.
+    this.fam = new Float32Array(m);     // 0 polygon, 1 star, 2 sliver, 3 glyph
+    this.nsides = new Float32Array(m);
+    this.aux = new Float32Array(m);     // star waist / sliver aspect / glyph index
+    this.areaK = new Float32Array(m);   // outline area / radius², i.e. how solid it is
+    // Trig the contact solver would otherwise redo per contact. cosA/sinA are
+    // refreshed once per substep when the angle is integrated; the sector
+    // constants only when the shape mode changes.
+    this.cosA = new Float32Array(m); this.sinA = new Float32Array(m);
+    this.beta = new Float32Array(m);    // angle between adjacent corners
+    this.invBeta = new Float32Array(m);
+    this.sinB = new Float32Array(m); this.cosB = new Float32Array(m);
 
     // Instance data. Split by update rate: the transform changes every frame,
     // the appearance only when a control moves, so the static half is uploaded
@@ -159,6 +237,8 @@ export class ObjectCell {
     // contract is that a step surprises the engine with nothing.
     this._spinK = 0;
     this._spinCap = 0;
+    this._dim = 1;        // broadphase grid pitch, set by _grid, read by _solve
+    this._supTan = 0;     // _support's side channel: (1/r)·dr/dθ at the last query
     this.paletteIndex = 0;
     this.densityAlpha = 0.55;
     this.tumble = 1;
@@ -180,6 +260,7 @@ export class ObjectCell {
     this.styleDirty = true;
     this._applySize();
     this._applyPalette();
+    this._resolveShapes();
   }
 
   refill(seed) {
@@ -199,15 +280,14 @@ export class ObjectCell {
     this.vx[i] = (rnd() - 0.5) * 0.5;
     this.vy[i] = (rnd() - 0.5) * 0.5;
     this.ang[i] = rnd() * Math.PI * 2;
-    // Drawn here to keep this stream's draw order stable, but scaled below:
-    // the weighting depends on the radius, which is not known until the next
-    // draw, and reordering the draws would change what a seed produces.
-    const spin0 = (rnd() - 0.5) * SPIN_SPAWN;
     // Heavy tail: a real cell is mostly chips with a few big statement pieces.
     const t = rnd();
     this.baseR[i] = 0.018 + Math.pow(t, 2.4) * 0.075;
     this.invI[i] = spinInertia(this.baseR[i]);
-    this.spin[i] = spin0 * this.invI[i];
+    // A shard is born at rest. It gets a random *angle* — a piece of glass
+    // tipped into a chamber lands whichever way up it lands — but not a random
+    // spin, because nothing spun it.
+    this.spin[i] = 0;
     this.sides[i] = 3 + Math.floor(rnd() * 6);
     this.phase[i] = rnd() * Math.PI * 2;
     this.opacity[i] = 0.55 + rnd() * 0.65;
@@ -232,8 +312,114 @@ export class ObjectCell {
   setPalette(index) { this.paletteIndex = index % PALETTES.length; this._applyPalette(); }
   setDensity(alpha) { this.densityAlpha = alpha; this.styleDirty = true; }
   setTumble(t) { this.tumble = Math.max(0, t); }
-  setShape(mode) { this.shapeMode = mode; this.styleDirty = true; }
-  setGlyphCount(n) { this.glyphCount = Math.max(1, n | 0); this.styleDirty = true; }
+  setShape(mode) { this.shapeMode = mode; this._resolveShapes(); }
+  setGlyphCount(n) { this.glyphCount = Math.max(1, n | 0); this._resolveShapes(); }
+
+  // Resolve each shard's shape for the current mode. The families are the ones
+  // SHARD_VS knows about: 0 polygon, 1 star, 2 sliver, 3 glyph — with aux
+  // meaning the star's waist, the sliver's aspect, or the glyph's index into
+  // the atlas, depending on which. Kept as state rather than recomputed in
+  // packStyle so that _support can read the same numbers the shader draws.
+  _resolveShapes() {
+    const mode = this.shapeMode;
+    const gN = this.glyphCount;
+    for (let i = 0; i < this.count; i++) {
+      let fam = 0, sides = this.sides[i], aux = 0;
+      if (mode === 'glyphs') {
+        fam = 3;
+        aux = Math.floor(this.glyphR[i] * gN) % gN;
+      } else if (mode === 'stars') {
+        fam = 1; sides = 5 + Math.floor(this.famR[i] * 4); aux = 0.34 + this.auxR[i] * 0.26;
+      } else if (mode === 'slivers') {
+        fam = 2; aux = 0.09 + this.auxR[i] * 0.28;
+      } else if (mode === 'mixed') {
+        const k = this.famR[i];
+        if (k > 0.78) { fam = 2; aux = 0.09 + this.auxR[i] * 0.28; }
+        else if (k > 0.48) { fam = 1; sides = 5 + Math.floor(this.auxR[i] * 4); aux = 0.34 + this.auxR[i] * 0.26; }
+      }
+      this.fam[i] = fam; this.nsides[i] = sides; this.aux[i] = aux;
+      const beta = TAU / (fam < 0.5 ? sides : (fam < 1.5 ? sides * 2 : 4));
+      this.beta[i] = beta; this.invBeta[i] = 1 / beta;
+      this.sinB[i] = Math.sin(beta); this.cosB[i] = Math.cos(beta);
+      this.cosA[i] = Math.cos(this.ang[i]); this.sinA[i] = Math.sin(this.ang[i]);
+      // How much glass is actually inside the outline, per unit of radius².
+      // A contact weights the two shards by this, so a needle no longer
+      // shoulders a chip aside on the strength of a bounding circle it barely
+      // fills. Exact areas for the shapes SHARD_VS draws: a regular n-gon, a
+      // star as 2n triangles between its outer and inner corners, and the
+      // inscribed square, squashed on one axis for a sliver.
+      this.areaK[i] = fam < 0.5 ? 0.5 * sides * Math.sin(TAU / sides)
+        : (fam < 1.5 ? sides * aux * Math.sin(Math.PI / sides)
+          : (fam < 2.5 ? 2 * aux : 2));
+    }
+    this.styleDirty = true;
+  }
+
+  // How far shard i's outline reaches along the unit direction (dx, dy) — its
+  // support radius. This is the whole of "collide with the shape rather than
+  // with a bounding circle": the contact test becomes
+  // d < support(i, n) + support(j, -n) instead of d < rad[i] + rad[j], and
+  // because it depends on the shard's own angle, a sliver end-on is now a
+  // needle and side-on is a plank.
+  //
+  // Full convex-polygon contact (SAT, clipped manifolds, two-point contacts)
+  // would be a different and much heavier sim. This is the cheap middle: exact
+  // for every one of the four families along the contact normal, and paid for
+  // only by the pairs the bounding circles already accepted.
+  //
+  // It takes a vector rather than an angle so the direction can be rotated into
+  // the shard's own frame with the cosA/sinA cached at integration time. That
+  // makes a sliver or a glyph contact trig-free, and leaves the polygons one
+  // atan2 and one sin/cos rather than four transcendentals.
+  //
+  // It also leaves _supTan = (1/r)·dr/dθ, the tangent of the angle between the
+  // outline's normal there and the radial direction. That is what tells the
+  // solver a push landed off the shard's centre line, i.e. how much it turns it.
+  _support(i, dx, dy) {
+    const R = this.rad[i];
+    const ca0 = this.cosA[i], sa0 = this.sinA[i];
+    const lx = dx * ca0 + dy * sa0;      // the direction, in the shard's frame
+    const ly = dy * ca0 - dx * sa0;
+    const fam = this.fam[i];
+    if (fam >= 2) {
+      // Sliver and glyph are both the square inscribed in the shard's disc, the
+      // sliver squashed on its local y — a rectangle, so the support is
+      // whichever face the ray leaves through. Its normal is a local axis, and
+      // tan is pi-periodic, so which of the two faces on that axis it is makes
+      // no difference to the tilt.
+      const hx = R * 0.70710678;
+      const hy = fam < 2.5 ? hx * this.aux[i] : hx;
+      const ax = lx < 0 ? -lx : lx, ay = ly < 0 ? -ly : ly;
+      if (hx * ay <= hy * ax) { this._supTan = ly / lx; return hx / ax; }
+      this._supTan = -lx / ly;
+      return hy / ay;
+    }
+    // Polygon and star are the same walk: n corners for the polygon, 2n for the
+    // star with every other one pulled in to aux — exactly as SHARD_VS draws
+    // them. Between two adjacent corners the outline is a chord, and the
+    // support along a chord between polar points (r1, 0) and (r2, beta) is
+    // r1·r2·sin beta / (r1·sin a + r2·sin(beta − a)).
+    const beta = this.beta[i];
+    const t = (Math.atan2(ly, lx) - this.phase[i]) * this.invBeta[i];
+    const k = Math.floor(t);
+    const a = (t - k) * beta;
+    let r1 = R, r2 = R;
+    if (fam >= 0.5) {
+      const w = R * this.aux[i];
+      if ((k & 1) === 0) r2 = w; else r1 = w;
+    }
+    const sa = Math.sin(a), ca = Math.cos(a);
+    const sB = this.sinB[i], cB = this.cosB[i];
+    const sb = sB * ca - cB * sa;        // sin(beta − a), without a second sin
+    const cb = cB * ca + sB * sa;        // cos(beta − a)
+    const K = r1 * r2 * sB;
+    const den = r1 * sa + r2 * sb;
+    const r = den > 1e-9 ? K / den : R;
+    // d/da of the above, divided by r: the chord's tilt away from radial, zero
+    // at the middle of a face and largest at a corner.
+    this._supTan = -r * (r1 * ca - r2 * cb) / K;
+    return r;
+  }
 
   setSize(scale) { this.sizeScale = scale; this._applySize(); }
 
@@ -248,13 +434,15 @@ export class ObjectCell {
     this.styleDirty = true;
   }
 
+  // Shaking the tube throws the pile about; it does not twist each piece. The
+  // tumbling that follows a shake is the pieces colliding on the way down,
+  // which the contact model produces on its own.
   shake(strength = 1) {
     for (let i = 0; i < this.count; i++) {
       const a = Math.random() * Math.PI * 2;
       const s = strength * (0.6 + Math.random() * 1.6);
       this.vx[i] += Math.cos(a) * s;
       this.vy[i] += Math.sin(a) * s;
-      this.spin[i] += (Math.random() - 0.5) * strength * SPIN_KICK * this.invI[i] * this.tumble;
     }
   }
 
@@ -284,7 +472,10 @@ export class ObjectCell {
 
     const damp = Math.exp(-0.55 * h);
     const spinDamp = Math.exp(-SPIN_DECAY * h);
-    const jitter = agitation * 9.0;
+    // sqrt(h), not h: this is a random walk, so its per-second amplitude only
+    // stays put across step rates if each kick scales with the square root of
+    // the step. Scaled with h it summed to nothing next to gravity.
+    const jitter = agitation * AGITATION * Math.sqrt(h);
     // Read once per substep by _pair and _walls, which is cheaper than handing
     // the same two numbers down through every contact.
     this._spinK = SPIN_COUPLE * this.tumble;
@@ -294,8 +485,8 @@ export class ObjectCell {
       let vx = this.vx[i] + gx * h;
       let vy = this.vy[i] + gy * h;
       if (jitter > 0) {
-        vx += (Math.random() - 0.5) * jitter * h;
-        vy += (Math.random() - 0.5) * jitter * h;
+        vx += (Math.random() - 0.5) * jitter;
+        vy += (Math.random() - 0.5) * jitter;
       }
       // The chamber wall drags the glass round with the tube.
       if (rollRate !== 0) {
@@ -308,7 +499,10 @@ export class ObjectCell {
       this.vx[i] = vx; this.vy[i] = vy;
       this.px[i] += vx * h;
       this.py[i] += vy * h;
-      this.ang[i] += this.spin[i] * h;
+      const ang = this.ang[i] + this.spin[i] * h;
+      this.ang[i] = ang;
+      // One sin/cos per shard per substep, so a contact needs none.
+      this.cosA[i] = Math.cos(ang); this.sinA[i] = Math.sin(ang);
       // Decay, then clip. Clipping here rather than after the contact passes
       // costs nothing extra and is a substep behind, which is invisible.
       let sp = this.spin[i] * spinDamp;
@@ -316,13 +510,22 @@ export class ObjectCell {
       this.spin[i] = sp > cap ? cap : (sp < -cap ? -cap : sp);
     }
 
-    this._collide();
-    this._walls();
+    // Relaxation: one broadphase, then a few contact passes. Velocity impulses
+    // are applied on the first pass only — the later ones are positional, so a
+    // dense pile is unpicked without being damped into treacle.
+    this._grid();
+    const iters = solverIters(n);
+    for (let it = 0; it < iters; it++) {
+      this._solve(it === 0);
+      this._walls(it === 0);
+    }
   }
 
   // Uniform-grid broadphase built by counting sort: two linear passes, no
   // per-cell arrays, nothing allocated after the first call at a given size.
-  _collide() {
+  // Built once per substep and walked once per relaxation pass — shards barely
+  // move between passes, so rebuilding it each time buys nothing.
+  _grid() {
     const n = this.count;
     const cs = this.maxRad * 2.0;
     const dim = Math.max(1, Math.min(96, Math.ceil((CELL_R * 2.2) / cs)));
@@ -348,7 +551,12 @@ export class ObjectCell {
       const c = toCell(this.py[i]) * dim + toCell(this.px[i]);
       items[cursor[c]++] = i;
     }
+    this._dim = dim;
+  }
 
+  _solve(velocity) {
+    const dim = this._dim;
+    const start = this.gridStart, items = this.gridItems;
     for (let gy = 0; gy < dim; gy++) {
       for (let gx = 0; gx < dim; gx++) {
         const c = gy * dim + gx;
@@ -363,7 +571,7 @@ export class ObjectCell {
               let bi = start[c2];
               if (c2 === c) bi = ai + 1;
               for (; bi < start[c2 + 1]; bi++) {
-                this._pair(i, items[bi]);
+                this._pair(i, items[bi], velocity);
               }
             }
           }
@@ -372,23 +580,40 @@ export class ObjectCell {
     }
   }
 
-  _pair(i, j) {
-    let dx = this.px[j] - this.px[i];
-    let dy = this.py[j] - this.py[i];
+  _pair(i, j, velocity) {
+    const dx = this.px[j] - this.px[i];
+    const dy = this.py[j] - this.py[i];
+    // Bounding circles first: this rejects almost every candidate the grid
+    // hands over, and only the survivors pay for the outlines.
     const rr = this.rad[i] + this.rad[j];
     const d2 = dx * dx + dy * dy;
     if (d2 >= rr * rr || d2 === 0) return;
     const d = Math.sqrt(d2);
     const nx = dx / d, ny = dy / d;
-    const overlap = rr - d;
 
-    // Mass from area: the big statement pieces shoulder the chips aside.
-    const mi = this.rad[i] * this.rad[i], mj = this.rad[j] * this.rad[j];
+    // …then the shapes themselves, along the line of centres.
+    const ri = this._support(i, nx, ny);
+    const ti = this._supTan;
+    const rj = this._support(j, -nx, -ny);
+    const tj = this._supTan;
+    const contact = ri + rj;
+    if (d >= contact) return;
+    // Capped: a shard turning into a neighbour can gain depth in one substep,
+    // and an uncapped correction would fling the pair apart.
+    let overlap = contact - d;
+    if (overlap > rr * 0.5) overlap = rr * 0.5;
+
+    // Mass from the glass actually in the outline, so a big statement piece
+    // shoulders the chips aside but a sliver of the same reach does not.
+    const mi = this.areaK[i] * this.rad[i] * this.rad[i];
+    const mj = this.areaK[j] * this.rad[j] * this.rad[j];
     const inv = 1 / (mi + mj);
     const wi = mj * inv, wj = mi * inv;
 
     this.px[i] -= nx * overlap * wi; this.py[i] -= ny * overlap * wi;
     this.px[j] += nx * overlap * wj; this.py[j] += ny * overlap * wj;
+
+    if (!velocity) return;
 
     const rvx = this.vx[j] - this.vx[i], rvy = this.vy[j] - this.vy[i];
     const vn = rvx * nx + rvy * ny;
@@ -401,17 +626,32 @@ export class ObjectCell {
     const tang = (-rvx * ny + rvy * nx) * this._spinK;
     this.spin[i] -= tang * this.invI[i];
     this.spin[j] += tang * this.invI[j];
+
+    // …and so does a push that lands off the centre line. _supTan is
+    // tan of the angle between the shard's surface normal there and the
+    // radial direction, so the torque about its centre is r·F·sin(that) —
+    // which is what makes a sliver rotate until it lies against its neighbour
+    // instead of balancing on a corner.
+    const k = SHAPE_TORQUE * imp * this.tumble;
+    this.spin[i] += k * ri * (ti / Math.sqrt(1 + ti * ti)) * this.invI[i];
+    this.spin[j] += k * rj * (tj / Math.sqrt(1 + tj * tj)) * this.invI[j];
   }
 
-  _walls() {
+  _walls(velocity) {
     for (let i = 0; i < this.count; i++) {
       const x = this.px[i], y = this.py[i];
-      const lim = CELL_R - this.rad[i];
+      const bound = CELL_R - this.rad[i];
       const d2 = x * x + y * y;
-      if (d2 <= lim * lim) continue;
+      if (d2 <= bound * bound) continue;      // bounding circle, as above
       const d = Math.sqrt(d2) || 1e-6;
       const nx = x / d, ny = y / d;
+      // The chamber wall meets the shard's outline, not its bounding circle —
+      // so a sliver lying flat against the wall reaches it, and end-on it
+      // stands further out.
+      const lim = CELL_R - this._support(i, nx, ny);
+      if (d <= lim) continue;
       this.px[i] = nx * lim; this.py[i] = ny * lim;
+      if (!velocity) continue;
       const vn = this.vx[i] * nx + this.vy[i] * ny;
       if (vn > 0) {
         this.vx[i] -= (1 + MAX_RESTITUTION) * vn * nx;
@@ -436,32 +676,17 @@ export class ObjectCell {
     return this.count * 4;
   }
 
-  // Resolve each shard's shape for the current mode. The families are the ones
-  // SHARD_VS knows about: 0 polygon, 1 star, 2 sliver, 3 glyph — with the
-  // fourth component meaning the star's waist, the sliver's aspect, or the
-  // glyph's index into the atlas, depending on which.
+  // Pack the appearance half of the instance data. The geometry it hands the
+  // shader is exactly what _resolveShapes worked out and _support collides
+  // with, so the picture and the physics can never disagree about what a
+  // shard's outline is.
   packStyle() {
     const s = this.style;
-    const mode = this.shapeMode;
-    const gN = this.glyphCount;
     for (let i = 0, o = 0; i < this.count; i++, o += 8) {
       s[o] = this.cr[i]; s[o + 1] = this.cg[i]; s[o + 2] = this.cb[i];
       s[o + 3] = Math.min(1, this.densityAlpha * this.opacity[i]);
-
-      let fam = 0, sides = this.sides[i], aux = 0;
-      if (mode === 'glyphs') {
-        fam = 3;
-        aux = Math.floor(this.glyphR[i] * gN) % gN;
-      } else if (mode === 'stars') {
-        fam = 1; sides = 5 + Math.floor(this.famR[i] * 4); aux = 0.34 + this.auxR[i] * 0.26;
-      } else if (mode === 'slivers') {
-        fam = 2; aux = 0.09 + this.auxR[i] * 0.28;
-      } else if (mode === 'mixed') {
-        const k = this.famR[i];
-        if (k > 0.78) { fam = 2; aux = 0.09 + this.auxR[i] * 0.28; }
-        else if (k > 0.48) { fam = 1; sides = 5 + Math.floor(this.auxR[i] * 4); aux = 0.34 + this.auxR[i] * 0.26; }
-      }
-      s[o + 4] = sides; s[o + 5] = this.phase[i]; s[o + 6] = fam; s[o + 7] = aux;
+      s[o + 4] = this.nsides[i]; s[o + 5] = this.phase[i];
+      s[o + 6] = this.fam[i]; s[o + 7] = this.aux[i];
     }
     this.styleDirty = false;
     return this.count * 8;

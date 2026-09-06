@@ -17,6 +17,14 @@
 // out of one. drawImage/texImage2D on it throws, and even if it did not, the
 // player is DRM-fenced. The working route to "a kaleidoscope of that video" is
 // the screen share below: start it, pick the tab playing the video, done.
+//
+// What is NOT here on one platform: the screen share itself. iOS and iPadOS
+// have no screen-capture API — getDisplayMedia is simply absent, and it is
+// absent from every browser on the platform, because Chrome and Firefox there
+// are skins over the same WebKit. There is no shim and no permission to grant;
+// the honest answer is the camera or a file instead. The checks in use() below
+// exist to say that in words, because the alternative is a bare "undefined is
+// not a function" in the console and a picker that appears to do nothing.
 
 const isSecure = typeof isSecureContext === 'undefined' ? true : isSecureContext;
 
@@ -76,6 +84,17 @@ export class MediaInput {
         const feature = kind === 'camera' ? 'camera' : 'display-capture';
         if (policyBlocks(feature)) {
           throw new Error(`blocked by this site's Permissions-Policy header (${feature})`);
+        }
+        // Feature-detect before the call, and name the real cause. A missing
+        // getDisplayMedia is not a permission problem and not something a
+        // reload or a settings hunt fixes: on iOS and iPadOS the API does not
+        // exist in any browser, so there is nothing to enable.
+        if (kind === 'screen' && typeof md.getDisplayMedia !== 'function') {
+          throw new Error('this browser has no screen capture — iOS and iPadOS '
+            + 'have no such API at all, in any browser. Use the camera or a file.');
+        }
+        if (kind === 'camera' && typeof md.getUserMedia !== 'function') {
+          throw new Error('this browser has no camera capture API');
         }
         const stream = kind === 'camera'
           ? await md.getUserMedia({ video: { width: { ideal: 1280 }, height: { ideal: 720 } }, audio: false })
