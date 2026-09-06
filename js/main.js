@@ -183,7 +183,10 @@ export function start(build) {
   bind('c-eyepiece', 'eyepiece');
   bind('c-vision', 'vision');
   bind('c-palette', 'palette', null, (v) => cell.setPalette(parseInt(v, 10)));
-  bind('c-shape', 'shape', null, (v) => { cell.setShape(v); syncRows(); });
+  // The ceiling depends on how much of its circle the shape fills, so it moves
+  // when the shape does — and again when the atlas changes, since a glyph's
+  // outline is its ink.
+  bind('c-shape', 'shape', null, (v) => { cell.setShape(v); refreshCountCap(); syncRows(); });
   bind('c-glyphs', 'glyphs', null, scheduleAtlas);
   bind('c-native', 'native');
   bind('c-count', 'count', countLabel, (v) => setCount(v));
@@ -227,7 +230,7 @@ export function start(build) {
   function countLabel(v) { return `${v | 0} / ${countEl.max}`; }
 
   function refreshCountCap() {
-    const cap = maxCountForSize(S.size, MAX_SHARDS);
+    const cap = maxCountForSize(S.size, MAX_SHARDS, cell.meanAreaK);
     countEl.max = String(cap);
     const want = Math.min(S.countWish, cap);
     if (S.count !== want) {
@@ -285,9 +288,33 @@ export function start(build) {
     for (const sec of secs) sec.open = S.secOpen[sec.id];
   }
 
-  hudToggle.addEventListener('click', () => { S.hudOpen = !S.hudOpen; applyFolds(); save(); });
+  // Both a click and a tap, because on iOS the click is not guaranteed. The page
+  // sets `touch-action: none` so the canvas does not pan under a drag, and
+  // WebKit then reads the few pixels a finger rolls between touchdown and lift
+  // as a gesture and declines to synthesise the click — the control lights up
+  // under the finger and nothing happens, which is exactly what a fold toggle
+  // looks like when it is "broken" on an iPad and fine on a desktop. Acting on
+  // pointerup as well costs nothing and does not wait for the synthesis.
+  //
+  // The click still has to be handled: it is what a keyboard's Enter and Space
+  // arrive as, and a mouse is left to it entirely.
+  const onTap = (el, fn) => {
+    let handled = 0;
+    el.addEventListener('pointerup', (e) => {
+      if (e.pointerType === 'mouse') return;
+      handled = e.timeStamp;
+      fn();
+    });
+    el.addEventListener('click', (e) => {
+      if (handled && e.timeStamp - handled < 700) return;   // already done on the tap
+      fn();
+    });
+  };
+
+  function toggleHud() { S.hudOpen = !S.hudOpen; applyFolds(); save(); }
   function togglePanel() { S.panelOpen = !S.panelOpen; applyFolds(); save(); }
-  panelToggle.addEventListener('click', togglePanel);
+  onTap(hudToggle, toggleHud);
+  onTap(panelToggle, togglePanel);
 
   for (const sec of secs) {
     // <details> fires `toggle` for our own writes as well as the user's, so
@@ -340,6 +367,7 @@ export function start(build) {
     const atlas = buildAtlas(chars, 128);
     renderer.setAtlas(atlas.canvas, atlas.cols, atlas.rows);
     cell.setGlyphs(atlas.count, atlas.ext);
+    refreshCountCap();
     $('m-cell').textContent = cellLabel();
   }
   rebuildAtlas();

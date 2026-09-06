@@ -124,7 +124,14 @@ raising the window size costs one cheap pass instead of two.
   `FILL_LIMIT` is the fraction of its area the shards may cover — 0.85, past
   random loose packing because a jar of glass *is* packed, but short of where
   the relaxation passes stop converging — and `maxCountForSize` turns that into
-  the largest count that fits at the current shard size. It is what the Shards
+  the largest count that fits at the current shard size *and shape*. It is the
+  area of the outlines, not of the bounding circles, and the difference is the
+  whole ballgame for anything that is not round: a disc fills its own circle, an
+  emoji about a third of one, a sliver a seventh. Counted as circles, a chamber
+  "full" of emoji held a quarter of its area in glass and the slider stopped at
+  a third of a cellful — which is what oceans of space between the characters
+  actually was. `cell.meanAreaK` is what the ceiling divides by, so it moves
+  when the shape does and again when the glyph atlas changes. It is what the Shards
   slider's maximum tracks, so raising Shard size lowers the ceiling. The slider
   used to run to 2400 at any size, which at the default size is roughly sixteen
   times over: the solver was being asked to unpick a pile with no solution, and
@@ -189,6 +196,25 @@ raising the window size costs one cheap pass instead of two.
 - **The backdrop is never persisted.** Everything else in the control panel is
   saved to localStorage; a reload must not reach for the camera on its own, and
   a dropped file's object URL died with the session.
+- **`touch-action: none` belongs on the canvas, not on the body.** The canvas
+  needs it — a drag across it rolls the tube and must not pan the page — but the
+  allowed gestures for a touch are intersected all the way up the ancestor
+  chain, so putting it on `<body>` governed every control in the panel too. On
+  iOS that is not a subtlety: WebKit's tap-to-click synthesis rides on the same
+  gesture recognizer, so every button in the app lit up under a finger and then
+  did nothing, while the sliders and the pickers — which never needed a
+  synthesised click — worked fine and made it look like a few controls were
+  broken rather than all of them. It also stopped the panel's own scroller from
+  scrolling by finger, which on a short screen hid most of the panel with no way
+  to reach it. Nothing reproduces this in a headless browser: a synthetic tap
+  goes straight to the click, gesture recognizer or no.
+- **The keyboard hints are for keyboards.** `#keys` is hidden on a coarse
+  pointer, not merely on a narrow one — an iPad in landscape is about 1200px,
+  so a width query left a list of keys that device does not have sitting over
+  the picture. Touch also gets bigger hit areas, by growing the containers
+  rather than letting a control's padding spill out of them: a hit area that
+  overflows its parent is painted over by whatever comes next, so the bottom
+  half of an "enlarged" button quietly does nothing.
 - **The control panel folds; it does not scroll.** Its four sections are
   `<details>`, the body collapses into the title bar, and the HUD collapses to
   the bare frame count — so the panel fits on the screen at any setting instead

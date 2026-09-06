@@ -69,16 +69,28 @@ const TAU = Math.PI * 2;
 // FILL_LIMIT is the fraction of the chamber's area the glass may cover. 0.85 is
 // deliberately past random loose packing (~0.55) and near the dense limit — a
 // jar of glass IS packed. It is measured at the knee: at the default shard size
-// the pile settles to a median overlap of about 2% at this fill and degrades
+// the pile settles to a median overlap of about 2-4% at this fill and degrades
 // sharply above it.
+//
+// It is the area of the shards' *outlines*, not of their bounding circles, and
+// the difference is not academic. A disc fills its own circle; an emoji fills
+// about a third of one and a sliver a seventh. Counted as circles, a chamber
+// "full" of emoji held only a quarter of its area in glass and the slider
+// stopped a third of the way to a full cell — which is what oceans of space
+// between the characters actually was.
 export const FILL_LIMIT = 0.85;
 // E[baseR^2] for the spawn distribution below: baseR = 0.018 + t^2.4 * 0.075,
 // t uniform. Integrated once here rather than sampled, so the cap is stable.
 const MEAN_R2 = 0.002088;
 
-// The largest shard count that still fits at a given size, which is what the
-// Shards slider's maximum tracks. Raising Shard size therefore lowers the
-// ceiling instead of overfilling the chamber.
+// The largest shard count that still fits at a given size and shape, which is
+// what the Shards slider's maximum tracks. Raising Shard size lowers the
+// ceiling instead of overfilling the chamber, and a shape that fills less of
+// its own circle — a glyph, a sliver — raises it, because more of them fit.
+//
+// shapeArea is the mean of areaK, i.e. outline area per unit of radius². A disc
+// is pi, and passing pi reduces this to the bounding-circle formula it used to
+// be.
 //
 // The caller's hardMax is the other half of the limit and is not redundant with
 // this one. Area fill only binds at large shard sizes: gravity drags the whole
@@ -87,8 +99,9 @@ const MEAN_R2 = 0.002088;
 // layer per pass. Below a certain size the binding constraint stops being "does
 // it fit" and becomes "can the solver still resolve it", which is a count, not
 // an area.
-export function maxCountForSize(sizeScale, hardMax) {
-  const n = Math.floor(FILL_LIMIT / (MEAN_R2 * sizeScale * sizeScale));
+export function maxCountForSize(sizeScale, hardMax, shapeArea = Math.PI) {
+  const a = shapeArea > 0 ? shapeArea : Math.PI;
+  const n = Math.floor(FILL_LIMIT * Math.PI / (a * MEAN_R2 * sizeScale * sizeScale));
   return Math.max(8, Math.min(hardMax, n));
 }
 
@@ -251,6 +264,7 @@ export class ObjectCell {
     this.shapeMode = 'chips';
     this.glyphCount = 1;
     this.glyphExt = null;   // per-glyph ink half-extents, from buildAtlas
+    this.meanAreaK = Math.PI;   // mean outline area per radius²; a disc until resolved
     this.setCount(360);
   }
 
@@ -379,6 +393,14 @@ export class ObjectCell {
       this.areaK[i] = fam < 0.5 ? 0.5 * sides * Math.sin(TAU / sides)
         : (fam < 1.5 ? sides * aux * Math.sin(Math.PI / sides)
           : 2 * pA * pB);
+    }
+    // What the Shards ceiling is computed from. Left alone for an empty cell:
+    // there is nothing to average, and the last real value is a better answer
+    // than a disc would be when the slider comes back up off zero.
+    if (this.count > 0) {
+      let a = 0;
+      for (let i = 0; i < this.count; i++) a += this.areaK[i];
+      this.meanAreaK = a / this.count;
     }
     this.styleDirty = true;
   }
