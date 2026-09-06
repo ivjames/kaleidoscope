@@ -31,7 +31,6 @@
       font-size: 12px;
       -webkit-font-smoothing: antialiased;
       overscroll-behavior: none;
-      touch-action: none;
     }
     #gl {
       position: fixed;
@@ -41,6 +40,18 @@
       display: block;
       cursor: grab;
       background: #000;
+      /* Only the canvas refuses touch gestures, and it is the only thing that
+         needs to: a drag across it rolls the tube and must not pan the page.
+         This used to sit on <body>, which was much too wide a net. The allowed
+         gestures for a touch are intersected all the way up the ancestor chain,
+         so `none` on the body governed every control in the panel as well — and
+         on iOS the tap-to-click synthesis rides on the same gesture recognizer.
+         The result was that every button in the app lit up under a finger and
+         then did nothing, while the sliders and the pickers, which never needed
+         a synthesised click, worked fine. It also meant the control panel's own
+         scroller could not be scrolled by finger, which on a short screen hid
+         most of the panel with no way to reach it. */
+      touch-action: none;
     }
     #gl.dragging { cursor: grabbing; }
 
@@ -60,7 +71,7 @@
     /* The whole fps line is the collapse control: tapping the number leaves the
        raw frame count and folds the graph and the breakdown away. */
     #hud-toggle {
-      display: flex; align-items: baseline; gap: 8px;
+      display: flex; align-items: baseline; gap: 8px; touch-action: manipulation;
       width: auto; background: none; border: 0; padding: 0;
       font-family: var(--mono); color: inherit; cursor: pointer;
     }
@@ -103,7 +114,7 @@
       text-transform: uppercase; margin-right: auto;
     }
     #panel-toggle {
-      width: auto; background: none; border: 0; padding: 0 2px;
+      width: auto; background: none; border: 0; padding: 0 2px; touch-action: manipulation;
       font-family: var(--mono); font-size: 10px; color: var(--faint);
       letter-spacing: .18em; text-transform: uppercase; cursor: pointer;
       display: flex; align-items: baseline; gap: 6px;
@@ -118,7 +129,7 @@
     .sec { border-bottom: 1px solid var(--border); }
     .sec:last-of-type { border-bottom: 0; }
     .sec > summary {
-      list-style: none; cursor: pointer;
+      list-style: none; cursor: pointer; touch-action: manipulation;
       font-size: 10px; letter-spacing: .28em; text-transform: uppercase;
       color: var(--accent); padding: 11px 0 9px;
       display: flex; align-items: center; justify-content: space-between;
@@ -153,6 +164,7 @@
     }
     #panel-body select, #panel-body button, .actions button, .btn-check span {
       display: block; width: 100%; font-family: var(--mono); font-size: 12px;
+      touch-action: manipulation;
       background: #0C0C0C; color: var(--white);
       border: 1px solid var(--border); padding: 7px 8px; cursor: pointer;
       text-align: left;
@@ -223,6 +235,41 @@
          offset — it would fall back to its static position at the top of the
          screen, on top of the HUD, instead of collapsing in place. */
       body.panel-min #panel { bottom: 8px; }
+    }
+
+    /* Touch. Two things are wrong on a tablet that are right with a mouse.
+       First, the keyboard hints: there is no keyboard, and half of what they
+       name — wheel, and every letter shortcut — cannot be done at all. They
+       were hidden below 860px, but an iPad in landscape is about 1200, so they
+       sat over the picture on exactly the device that can use none of them.
+       Second, the size of things: a 49x11 button is a mouse target. The fold
+       controls keep their layout box and grow their hit area outwards, so the
+       title bar does not get taller on a phone to pay for it. */
+    @media (pointer: coarse) {
+      #keys { display: none; }
+      /* Grow the containers rather than letting a control's padding spill out
+         of them: a hit area that overflows its parent is painted over by
+         whatever comes after it in the panel, so the bottom half of an
+         "enlarged" button quietly does nothing. */
+      #panel header { min-height: 56px; align-items: center; padding-top: 0; padding-bottom: 0; }
+      #panel-toggle { align-self: stretch; align-items: center; padding: 0 12px; margin-right: -12px; }
+      #hud-toggle { padding: 8px 12px 8px 0; margin-right: -12px; }
+      .sec > summary { padding: 18px 0 16px; }
+      .check { min-height: 44px; }
+      #panel-body select, #panel-body button, .actions button, .btn-check span { padding: 14px 8px; }
+      /* The slider's own box is the 3px track, so it was the smallest target on
+         the panel and the one most worth hitting. Give the input real height
+         and move the visible track into a pseudo-element, so what you see is
+         unchanged and what you can hit is a finger tall. Margin would not do:
+         margin is not hit-testable. */
+      input[type=range] {
+        height: 30px; margin: 0; background: transparent;
+      }
+      input[type=range]::-webkit-slider-runnable-track {
+        height: 3px; background: var(--border);
+      }
+      input[type=range]::-moz-range-track { height: 3px; background: var(--border); }
+      input[type=range]::-webkit-slider-thumb { margin-top: -6px; }
     }
   </style>
 </head>

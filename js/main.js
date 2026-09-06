@@ -183,7 +183,10 @@ export function start(build) {
   bind('c-eyepiece', 'eyepiece');
   bind('c-vision', 'vision');
   bind('c-palette', 'palette', null, (v) => cell.setPalette(parseInt(v, 10)));
-  bind('c-shape', 'shape', null, (v) => { cell.setShape(v); syncRows(); });
+  // The ceiling depends on how much of its circle the shape fills, so it moves
+  // when the shape does — and again when the atlas changes, since a glyph's
+  // outline is its ink.
+  bind('c-shape', 'shape', null, (v) => { cell.setShape(v); refreshCountCap(); syncRows(); });
   bind('c-glyphs', 'glyphs', null, scheduleAtlas);
   bind('c-native', 'native');
   bind('c-count', 'count', countLabel, (v) => setCount(v));
@@ -227,7 +230,7 @@ export function start(build) {
   function countLabel(v) { return `${v | 0} / ${countEl.max}`; }
 
   function refreshCountCap() {
-    const cap = maxCountForSize(S.size, MAX_SHARDS);
+    const cap = maxCountForSize(S.size, MAX_SHARDS, cell.meanAreaK);
     countEl.max = String(cap);
     const want = Math.min(S.countWish, cap);
     if (S.count !== want) {
@@ -285,9 +288,45 @@ export function start(build) {
     for (const sec of secs) sec.open = S.secOpen[sec.id];
   }
 
-  hudToggle.addEventListener('click', () => { S.hudOpen = !S.hudOpen; applyFolds(); save(); });
+  // Insurance, not the fix. The fix is that `touch-action: none` now sits on the
+  // canvas instead of the body, so iOS is no longer being asked to suppress the
+  // gestures its tap-to-click synthesis rides on. But that fault could not be
+  // reproduced here — a synthetic tap goes straight to the click, gesture
+  // recognizer or not, so it passes in a headless browser either way — and the
+  // cost of being wrong is another round trip on a device I cannot see. So the
+  // buttons this file drives also act on the tap itself.
+  //
+  // What this does NOT cover: the <summary> folds and the Pause label, whose
+  // activation is the browser's own. If the diagnosis above is right they are
+  // fixed with everything else; if it is wrong they are the remaining half.
+  const onTap = (el, fn) => {
+    let lifted = 0;
+    el.addEventListener('pointerup', (e) => {
+      if (e.pointerType === 'mouse') return;      // a mouse has a reliable click
+      // Touch gives the pointerup to whatever took the pointerdown, even when
+      // the finger has slid somewhere else entirely. Sliding off a control and
+      // letting go is how a tap is cancelled, so honour that.
+      const r = el.getBoundingClientRect();
+      if (e.clientX < r.left || e.clientX > r.right || e.clientY < r.top || e.clientY > r.bottom) {
+        lifted = 0;
+        return;
+      }
+      lifted = e.timeStamp;
+      fn();
+    });
+    el.addEventListener('click', (e) => {
+      // detail 0 is a keyboard activation — Enter or Space on a focused button —
+      // which has no tap behind it and must never be swallowed.
+      if (e.detail !== 0 && lifted && e.timeStamp - lifted < 500) return;
+      lifted = 0;
+      fn();
+    });
+  };
+
+  function toggleHud() { S.hudOpen = !S.hudOpen; applyFolds(); save(); }
   function togglePanel() { S.panelOpen = !S.panelOpen; applyFolds(); save(); }
-  panelToggle.addEventListener('click', togglePanel);
+  onTap(hudToggle, toggleHud);
+  onTap(panelToggle, togglePanel);
 
   for (const sec of secs) {
     // <details> fires `toggle` for our own writes as well as the user's, so
@@ -307,7 +346,7 @@ export function start(build) {
   // alone: the backdrop, which is never persisted and which a reset must not
   // use as an excuse to reach for the camera, and view.roll, because throwing
   // the tube back to zero looks like a glitch rather than a reset.
-  $('b-reset').addEventListener('click', () => {
+  onTap($('b-reset'), () => {
     for (const k of Object.keys(DEFAULTS)) {
       S[k] = k === 'secOpen' ? { ...DEFAULTS.secOpen } : DEFAULTS[k];
     }
@@ -340,6 +379,7 @@ export function start(build) {
     const atlas = buildAtlas(chars, 128);
     renderer.setAtlas(atlas.canvas, atlas.cols, atlas.rows);
     cell.setGlyphs(atlas.count, atlas.ext);
+    refreshCountCap();
     $('m-cell').textContent = cellLabel();
   }
   rebuildAtlas();
@@ -361,8 +401,8 @@ export function start(build) {
   presetSel.addEventListener('input', loadPreset);
   presetSel.addEventListener('change', loadPreset);
 
-  $('b-shake').addEventListener('click', () => cell.shake(2.2));
-  $('b-refill').addEventListener('click', () => cell.refill());
+  onTap($('b-shake'), () => cell.shake(2.2));
+  onTap($('b-refill'), () => cell.refill());
 
   // ---- backdrop -----------------------------------------------------------
   const backSel = $('c-backdrop');
