@@ -154,6 +154,11 @@ export class ObjectCell {
 
     this.accumulator = 0;
     this.stepHz = 180;
+    // Declared here rather than sprouted on the first update: _step rewrites
+    // them every substep and _pair/_walls read them, and this file's whole
+    // contract is that a step surprises the engine with nothing.
+    this._spinK = 0;
+    this._spinCap = 0;
     this.paletteIndex = 0;
     this.densityAlpha = 0.55;
     this.tumble = 1;
