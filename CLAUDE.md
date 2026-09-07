@@ -120,39 +120,35 @@ raising the window size costs one cheap pass instead of two.
   contact weights the two shards by it. Without that a needle shoulders a chip
   aside on the strength of a circle it barely fills — a sliver averages 0.45
   against a disc's π.
-- **The chamber is a disc of fixed size, so only so much glass fits in it.**
-  `FILL_LIMIT` is the fraction of its area the shards may cover — 0.62, which is
-  calibrated against the area of the *outlines*, and that is what sets the
-  number rather than any packing intuition: 0.85 was right while this counted
-  bounding circles, and reusing it against outlines would be a far denser cell,
+- **Three separate ceilings on the shard count, and only one is physics.**
+  `shardCeiling` takes the smallest, and tells the caller which one bit so the
+  panel can say so — "the chamber is full" in front of an obviously sparse cell
+  reads as a bug.
+  `fitsInChamber` is the geometry: `FILL_LIMIT` of the disc's area, divided by
+  the mean *outline* area rather than the bounding circle. That distinction sets
+  the constant — 0.62, not the 0.85 that was right while this counted circles,
   because 0.85 of the chamber in real glass is past where randomly oriented
   pieces jam. Measured across chips and glyphs, 0.62 settles to a median contact
-  depth of about 2%, which is what the old figure achieved in its own terms, and
-  it leaves the chips ceiling within a few of the 140 it has always been — so
-  counting glass rather than circles does not quietly densify the default cell,
-  it only stops under-filling the chamber for everything that is not round.
-  `maxCountForSize` turns that into
-  the largest count that fits at the current shard size *and shape*. It is the
-  area of the outlines, not of the bounding circles, and the difference is the
-  whole ballgame for anything that is not round: a disc fills its own circle, an
-  emoji about a third of one, a sliver a seventh. Counted as circles, a chamber
-  "full" of emoji held a quarter of its area in glass and the slider stopped at
-  a third of a cellful — which is what oceans of space between the characters
-  actually was. `cell.meanAreaK` is what the ceiling divides by, so it moves
-  when the shape does and again when the glyph atlas changes. It is what the Shards
-  slider's maximum tracks, so raising Shard size lowers the ceiling. The slider
-  used to run to 2400 at any size, which at the default size is roughly sixteen
-  times over: the solver was being asked to unpick a pile with no solution, and
-  that is what the twitching and the overlapping were.
-  That area cap is only half the limit, and `maxCountForSize`'s `hardMax` — 300,
-  in `js/main.js` — is the other half rather than a belt-and-braces duplicate of
-  it. Area fill only binds at large shard sizes, because gravity drags the whole
-  cell into a heap at the bottom whatever the fill fraction is: a thousand tiny
-  chips make a pile many layers deep, and a relaxation pass unpicks one layer.
-  At shard size 0.4 with 900 shards the chamber is under a third full by area
-  and the pile is still deeply interpenetrated. Below a certain size the binding
-  constraint stops being "does it fit" and becomes "can the solver resolve it",
-  which is a count and not an area.
+  depth of about 2%, and it leaves the chips ceiling on the 140 it has always
+  had, so counting glass rather than circles does not quietly densify the
+  default cell; it only stops under-filling for everything that is not round.
+  A disc fills its own circle, an emoji about a third of one, a sliver a
+  seventh, and counted as circles a chamber "full" of emoji held a quarter of
+  its area in glass.
+  `settlesUnder` is numerics, and it is about **gravity**, not count. A
+  relaxation pass carries a correction one contact deep, so a pile fails when
+  the weight on its lower layers outruns the passes. Measured at shard size 0.4,
+  a cellful of 1500 settles to a median overlap of 0.0% at zero gravity and 23%
+  at the default: floating glass has no stack to crush, so it can be far finer.
+  The curve is fitted to hold roughly five percent at the ceiling across the
+  range — 600 at rest, 300 at the default — and floored so winding gravity to
+  the top thins the cell rather than emptying it.
+  `COST_LIMIT` is frame time, flat, and cares about none of the above. At shard
+  size 0.4 the sim costs about 2 ms a frame at 300 shards, 5 at 600, 19 at 1500
+  and 47 at 2400. It is what makes the old 2400 slider indefensible: at zero
+  gravity the solver handles 2400 perfectly well, it simply cannot be afforded —
+  and the adaptive scale cannot help, because that moves render resolution and
+  this is CPU.
   Contacts are relaxed over `solverIters` passes per substep — three, dropping
   to two past 180 shards to bound the cost — with the velocity impulses on the
   first pass only, so a dense pile is unpicked without being damped into
