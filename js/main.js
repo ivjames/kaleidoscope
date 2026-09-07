@@ -466,7 +466,7 @@ export function start(build) {
   };
   backSel.addEventListener('input', pickBackdrop);
   backSel.addEventListener('change', pickBackdrop);
-  $('b-file').addEventListener('click', () => fileInput.click());
+  onTap($('b-file'), () => fileInput.click());
   fileInput.addEventListener('change', () => {
     const f = fileInput.files && fileInput.files[0];
     fileInput.value = '';
@@ -678,8 +678,13 @@ export function start(build) {
     // frame — see MediaInput.
     media.poll();
     if (media.ready && media.dirty) {
-      media.dirty = false;
-      renderer.uploadMedia(media.source);
+      // Stay dirty until it actually lands. A video re-arms itself from its own
+      // decode callback, but a still image has no pump: clearing the flag on an
+      // upload that failed — a source whose intrinsic size is not known yet, or
+      // one texImage2D refuses — would leave the panel reporting a loaded file
+      // over a backdrop that never changed. The retry is a cheap early return
+      // until the source becomes usable.
+      media.dirty = !renderer.uploadMedia(media.source);
     }
 
     renderer.beginTiming();

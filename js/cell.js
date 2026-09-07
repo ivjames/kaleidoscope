@@ -725,9 +725,16 @@ export class ObjectCell {
     this.vx[i] -= nx * imp * wi; this.vy[i] -= ny * imp * wi;
     this.vx[j] += nx * imp * wj; this.vy[j] += ny * imp * wj;
 
-    // Grazing contacts set the pieces turning.
+    // Grazing contacts set the pieces turning. Both of them the same way: two
+    // surfaces rubbing drag each other round, the way a coin dragged along a
+    // table rolls rather than counter-rotating. Giving i and j opposite signs
+    // looks symmetrical and is not — the contact sits at +n from i and at -n
+    // from j, so the same drag is the same torque on both — and the two
+    // cancelled exactly, leaving the relative slip of the surfaces untouched.
+    // The test is that friction must reduce that slip: for shards touching
+    // along n, it is (vj·t - wj·rj) - (vi·t + wi·ri).
     const tang = (-rvx * ny + rvy * nx) * this._spinK;
-    this.spin[i] -= tang * this.invI[i];
+    this.spin[i] += tang * this.invI[i];
     this.spin[j] += tang * this.invI[j];
 
     // …and so does a push that lands off the centre line. _supTan is
