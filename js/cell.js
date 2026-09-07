@@ -89,14 +89,35 @@ export const FILL_LIMIT = 0.62;
 // t uniform. Integrated once here rather than sampled, so the cap is stable.
 const MEAN_R2 = 0.002088;
 
-// The largest shard count that still fits at a given size and shape, which is
-// what the Shards slider's maximum tracks. Raising Shard size lowers the
-// ceiling instead of overfilling the chamber, and a shape that fills less of
-// its own circle — a glyph, a sliver — raises it, because more of them fit.
+// --- the three ceilings ------------------------------------------------------
 //
-// shapeArea is the mean of areaK, i.e. outline area per unit of radius². A disc
-// is pi, and passing pi reduces this to the bounding-circle formula it used to
-// be.
+// There are three separate limits on how many shards there can be, and only the
+// first is physics. Keeping them apart matters because they move independently:
+//
+//   fitsInChamber   geometry. How much glass the disc holds. Falls as shard
+//                   size rises, and rises for a shape that fills less of its
+//                   own circle.
+//   settlesUnder    numerics. A relaxation pass carries a correction one
+//                   contact deep, so a pile fails when the weight on its lower
+//                   layers outruns the passes. This one is about GRAVITY, not
+//                   about count: measured at shard size 0.4, a cellful of 1500
+//                   settles to a median contact overlap of 0.0% at zero gravity
+//                   and 23% at the default. Floating glass has no stack to
+//                   crush, so it can be far finer.
+//   COST_LIMIT      frame time. Flat, and the only one that does not care about
+//                   any of the above. At shard size 0.4: 300 shards cost about
+//                   2 ms of sim per frame, 600 about 5, 1500 about 19 and 2400
+//                   about 47. This is what makes the old 2400 slider
+//                   indefensible — at zero gravity the solver handles 2400
+//                   perfectly well, it just cannot be afforded.
+//
+// The ceiling is the smallest of the three, and which one is smallest is worth
+// telling the person, because "the chamber is full" in front of an obviously
+// sparse cell reads as a bug.
+
+// How much glass the chamber holds. shapeArea is the mean of areaK, i.e. outline
+// area per unit of radius². A disc is pi, and passing pi reduces this to the
+// bounding-circle formula this used to be.
 //
 // The caller's hardMax is the other half of the limit and is not redundant with
 // this one. Area fill only binds at large shard sizes: gravity drags the whole
@@ -105,10 +126,36 @@ const MEAN_R2 = 0.002088;
 // layer per pass. Below a certain size the binding constraint stops being "does
 // it fit" and becomes "can the solver still resolve it", which is a count, not
 // an area.
-export function maxCountForSize(sizeScale, hardMax, shapeArea = Math.PI) {
+export function fitsInChamber(sizeScale, shapeArea = Math.PI) {
   const a = shapeArea > 0 ? shapeArea : Math.PI;
-  const n = Math.floor(FILL_LIMIT * Math.PI / (a * MEAN_R2 * sizeScale * sizeScale));
-  return Math.max(8, Math.min(hardMax, n));
+  return Math.floor(FILL_LIMIT * Math.PI / (a * MEAN_R2 * sizeScale * sizeScale));
+}
+
+// How many the solver can still settle at a given gravity, in the sim's own
+// units (the Gravity slider times GRAVITY_SCALE). Fitted to the measured median
+// contact overlap at the ceiling — about five percent, flat across the range,
+// so the ceiling tracks a constant quality rather than a constant number:
+// 600 at rest, 300 at the default 3.6, and floored so that winding gravity to
+// the top thins the cell rather than emptying it.
+const SETTLE_K = 1440;
+const SETTLE_G0 = 1.2;
+const SETTLE_FLOOR = 150;
+export function settlesUnder(gravity) {
+  return Math.max(SETTLE_FLOOR, Math.floor(SETTLE_K / (Math.max(0, gravity) + SETTLE_G0)));
+}
+
+// What the frame budget allows, whatever the other two say.
+export const COST_LIMIT = 600;
+
+// The ceiling, and which of the three set it — the caller shows that to the
+// person rather than leaving a slider that mysteriously stops moving.
+export function shardCeiling(sizeScale, shapeArea, gravity) {
+  const fits = fitsInChamber(sizeScale, shapeArea);
+  const settles = settlesUnder(gravity);
+  const n = Math.max(8, Math.min(fits, settles, COST_LIMIT));
+  const why = n === COST_LIMIT && COST_LIMIT <= fits && COST_LIMIT <= settles ? 'cost'
+    : (settles <= fits ? 'gravity' : 'size');
+  return { n, why, fits, settles };
 }
 
 // Contacts are solved by relaxation, and one pass is not enough: a pass only

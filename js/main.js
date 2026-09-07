@@ -6,15 +6,17 @@
 // metrics live in ring buffers, the sim writes into pre-sized arrays, and the
 // HUD is text-poked at 10 Hz rather than rebuilt per frame.
 
-import { ObjectCell, PALETTES, SHAPES, maxCountForSize } from './cell.js';
+import { ObjectCell, PALETTES, SHAPES, shardCeiling, COST_LIMIT } from './cell.js';
 import { Renderer, TUBES } from './renderer.js';
 import { MediaInput } from './media.js';
 import { GLYPH_PRESETS, MAX_GLYPHS, buildAtlas, splitGraphemes } from './glyphs.js';
 
-// The absolute ceiling on the Shards slider, alongside the area-based cap in
-// maxCountForSize. It used to be 2400, which no size of shard could actually be
-// resolved at: the pile simply interpenetrated and twitched.
-const MAX_SHARDS = 300;
+// The most the Shards slider can ever offer — the frame-budget limit, which is
+// the only one of the three ceilings that does not move. See shardCeiling.
+const MAX_SHARDS = COST_LIMIT;
+// Gravity as the sim sees it. Hoisted because the shard ceiling depends on it
+// as well as the frame loop, and the two must not drift apart.
+const GRAVITY_SCALE = 4.0;
 const CELL_SIZES = [256, 384, 512, 768, 1024];
 const STORE_KEY = 'lab980.kaleidoscope.v1';
 
@@ -192,7 +194,7 @@ export function start(build) {
   bind('c-count', 'count', countLabel, (v) => setCount(v));
   bind('c-alpha', 'alpha', n2, (v) => cell.setDensity(v));
   bind('c-size', 'size', n2, (v) => { cell.setSize(v); refreshCountCap(); });
-  bind('c-grav', 'gravity', n2);
+  bind('c-grav', 'gravity', n2, refreshCountCap);
   bind('c-agit', 'agitation', pct);
   bind('c-tumble', 'tumble', (v) => n2(v) + '×', (v) => cell.setTumble(v));
   bind('c-mediamix', 'mediaMix', pct);
@@ -230,7 +232,7 @@ export function start(build) {
   function countLabel(v) { return `${v | 0} / ${countEl.max}`; }
 
   function refreshCountCap() {
-    const cap = maxCountForSize(S.size, MAX_SHARDS, cell.meanAreaK);
+    const { n: cap, why } = shardCeiling(S.size, cell.meanAreaK, S.gravity * GRAVITY_SCALE);
     countEl.max = String(cap);
     const want = Math.min(S.countWish, cap);
     if (S.count !== want) {
@@ -242,16 +244,15 @@ export function start(build) {
       save();
     }
     $('o-count').textContent = countLabel(S.count);
-    // Two different reasons for a ceiling, and the note says which one is
-    // biting: at a large shard size the chamber is simply full, while at a
-    // small one it is the pile getting too deep for the contact solver to
-    // unpick — telling someone "it is full" in front of an obviously sparse
-    // cell just reads as a bug.
-    $('fill-note').textContent = cap < MAX_SHARDS
-      ? `About ${cap} pieces of this size fill the chamber, so the Shards ceiling `
-        + 'comes down as Shard size goes up.'
-      : `${cap} is as many as the pile can be settled at, whatever their size — `
-        + 'past that the pieces stop resolving and the cell twitches.';
+    // Say which of the three ceilings is biting. Telling someone the chamber is
+    // full in front of an obviously sparse cell just reads as a bug.
+    $('fill-note').textContent =
+      why === 'size' ? `About ${cap} pieces of this size fill the chamber, so the `
+        + 'Shards ceiling comes down as Shard size goes up.'
+      : why === 'gravity' ? `${cap} is as many as this much gravity lets the pile settle `
+        + '— lower Gravity and the ceiling rises, because floating glass has no stack to crush.'
+      : `${cap} is as many as the frame budget allows. The solver would take more, `
+        + 'but the sim is CPU work and the HUD would show it.';
   }
 
   function syncRows() {
@@ -664,7 +665,7 @@ export function start(build) {
     let substeps = 0;
     const t0 = performance.now();
     if (!S.paused) {
-      simOpts.gravity = S.gravity * 4.0;
+      simOpts.gravity = S.gravity * GRAVITY_SCALE;
       simOpts.roll = view.roll;
       simOpts.rollRate = view.dragging ? 0 : S.rollRate;
       simOpts.agitation = S.agitation;
